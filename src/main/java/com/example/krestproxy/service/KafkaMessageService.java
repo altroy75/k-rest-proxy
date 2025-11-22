@@ -20,11 +20,73 @@ import java.util.Map;
 @Service
 public class KafkaMessageService {
 
+    private static final String EXEC_IDS_TOPIC = "execids";
     private final ObjectPool<Consumer<Object, Object>> consumerPool;
 
     @Autowired
     public KafkaMessageService(ObjectPool<Consumer<Object, Object>> consumerPool) {
         this.consumerPool = consumerPool;
+    }
+
+    public List<MessageDto> getMessagesForExecution(List<String> topics, String execId) {
+        var times = findExecutionTimes(execId);
+        return getMessagesInternal(topics, times.start(), times.end(), execId);
+    }
+
+    private record ExecTime(Instant start, Instant end) {}
+
+    private ExecTime findExecutionTimes(String execId) {
+        Consumer<Object, Object> consumer = null;
+        try {
+            consumer = consumerPool.borrowObject();
+            var topicPartition = new TopicPartition(EXEC_IDS_TOPIC, 0);
+            consumer.assign(List.of(topicPartition));
+            consumer.seekToBeginning(List.of(topicPartition));
+
+            Instant startTime = null;
+            Instant endTime = null;
+
+            // Assuming "few days" retention isn't massive, but we should be careful.
+            // We scan until we find both or reach end.
+            while (startTime == null || endTime == null) {
+                var records = consumer.poll(Duration.ofMillis(100));
+                if (records.isEmpty()) {
+                    break;
+                }
+
+                for (var record : records) {
+                    String keyStr = record.key().toString();
+                    if (execId.equals(keyStr)) {
+                        String valStr = record.value().toString();
+                        if ("start".equals(valStr)) {
+                            startTime = Instant.ofEpochMilli(record.timestamp());
+                        } else if ("end".equals(valStr)) {
+                            endTime = Instant.ofEpochMilli(record.timestamp());
+                        }
+                    }
+                }
+            }
+
+            if (startTime == null || endTime == null) {
+                throw new RuntimeException("Could not find start and/or end time for execution ID: " + execId);
+            }
+
+            return new ExecTime(startTime, endTime);
+
+        } catch (Exception e) {
+            if (e instanceof RuntimeException re) {
+                throw re;
+            }
+            throw new RuntimeException("Error scanning execids topic", e);
+        } finally {
+            if (consumer != null) {
+                try {
+                    consumerPool.returnObject(consumer);
+                } catch (Exception e) {
+                    // Log error
+                }
+            }
+        }
     }
 
     public List<MessageDto> getMessages(String topic, Instant startTime, Instant endTime) {
