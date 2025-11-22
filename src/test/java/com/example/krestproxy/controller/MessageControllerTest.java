@@ -10,6 +10,7 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import java.time.Instant;
 import java.util.Arrays;
+import java.util.Collections;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -60,5 +61,22 @@ class MessageControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(content().json(
                         "[{\"content\":\"msg1\",\"timestamp\":1000,\"partition\":0,\"offset\":0},{\"content\":\"msg2\",\"timestamp\":2000,\"partition\":0,\"offset\":1}]"));
+    }
+
+    @Test
+    void getMessagesWithExecId_shouldReturnMessages_whenApiKeyIsValid() throws Exception {
+        com.example.krestproxy.dto.MessageDto msg1 = new com.example.krestproxy.dto.MessageDto("msg1", 1000L, 0, 0L);
+
+        when(kafkaMessageService.getMessagesWithExecId(eq("test-topic"), any(Instant.class), any(Instant.class), eq("exec-1")))
+                .thenReturn(Collections.singletonList(msg1));
+
+        mockMvc.perform(get("/api/v1/messages/test-topic/filter")
+                .header("X-API-KEY", "secret-api-key")
+                .param("startTime", "2023-01-01T10:00:00Z")
+                .param("endTime", "2023-01-01T10:05:00Z")
+                .param("execId", "exec-1"))
+                .andExpect(status().isOk())
+                .andExpect(content().json(
+                        "[{\"content\":\"msg1\",\"timestamp\":1000,\"partition\":0,\"offset\":0}]"));
     }
 }

@@ -1,5 +1,6 @@
 package com.example.krestproxy.controller;
 
+import com.example.krestproxy.dto.MessageDto;
 import com.example.krestproxy.service.KafkaMessageService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -21,7 +22,7 @@ public class MessageController {
     }
 
     @GetMapping("/{topic}")
-    public ResponseEntity<List<com.example.krestproxy.dto.MessageDto>> getMessages(
+    public ResponseEntity<List<MessageDto>> getMessages(
             @PathVariable String topic,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant startTime,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant endTime) {
@@ -30,8 +31,22 @@ public class MessageController {
             return ResponseEntity.badRequest().build();
         }
 
-        List<com.example.krestproxy.dto.MessageDto> messages = kafkaMessageService.getMessages(topic, startTime,
-                endTime);
+        var messages = kafkaMessageService.getMessages(topic, startTime, endTime);
+        return ResponseEntity.ok(messages);
+    }
+
+    @GetMapping("/{topic}/filter")
+    public ResponseEntity<List<MessageDto>> getMessagesWithExecId(
+            @PathVariable String topic,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant startTime,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant endTime,
+            @RequestParam String execId) {
+
+        if (startTime.isAfter(endTime)) {
+            return ResponseEntity.badRequest().build();
+        }
+
+        var messages = kafkaMessageService.getMessagesWithExecId(topic, startTime, endTime, execId);
         return ResponseEntity.ok(messages);
     }
 }

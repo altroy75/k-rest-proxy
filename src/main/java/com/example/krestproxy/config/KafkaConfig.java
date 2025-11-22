@@ -12,9 +12,9 @@ import org.springframework.kafka.core.ConsumerFactory;
 public class KafkaConfig {
 
     @Bean
-    public ObjectPool<Consumer<String, Object>> consumerPool(ConsumerFactory<String, Object> consumerFactory) {
-        PooledKafkaConsumerFactory factory = new PooledKafkaConsumerFactory(consumerFactory);
-        GenericObjectPoolConfig<Consumer<String, Object>> config = new GenericObjectPoolConfig<>();
+    public ObjectPool<Consumer<Object, Object>> consumerPool(ConsumerFactory<Object, Object> consumerFactory) {
+        var factory = new PooledKafkaConsumerFactory(consumerFactory);
+        var config = new GenericObjectPoolConfig<Consumer<Object, Object>>();
         config.setMaxTotal(10); // Adjust based on needs
         config.setMaxIdle(5);
         config.setMinIdle(1);
