@@ -13,6 +13,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 
@@ -232,5 +233,75 @@ class KafkaMessageServiceTest {
 
                 verify(consumer).assign(argThat(list -> list.contains(partition1) && list.contains(partition2)));
                 verify(consumerPool).returnObject(consumer);
+        }
+
+        @Test
+        void testGetMessagesForExecution_Success() throws Exception {
+                String execId = "exec-1";
+                String execTopic = "execids";
+                String dataTopic = "data-topic";
+                long startTs = 1000;
+                long endTs = 2000;
+
+                when(consumerPool.borrowObject()).thenReturn(consumer);
+
+                // Mock finding execution times
+                TopicPartition execPartition = new TopicPartition(execTopic, 0);
+
+                // Mock records for scanning execids
+                // Start record
+                ConsumerRecord<Object, Object> startRecord = new ConsumerRecord<>(execTopic, 0, 0, startTs, org.apache.kafka.common.record.TimestampType.CREATE_TIME,
+                        0, 0, execId, "start", new org.apache.kafka.common.header.internals.RecordHeaders(), Optional.empty());
+
+                // End record
+                ConsumerRecord<Object, Object> endRecord = new ConsumerRecord<>(execTopic, 0, 1, endTs, org.apache.kafka.common.record.TimestampType.CREATE_TIME,
+                        0, 0, execId, "end", new org.apache.kafka.common.header.internals.RecordHeaders(), Optional.empty());
+
+                Map<TopicPartition, List<ConsumerRecord<Object, Object>>> recordsMap = new HashMap<>();
+                recordsMap.put(execPartition, Arrays.asList(startRecord, endRecord));
+                ConsumerRecords<Object, Object> execRecords = new ConsumerRecords<>(recordsMap);
+
+
+                // Mock data retrieval
+                TopicPartition dataPartition = new TopicPartition(dataTopic, 0);
+                when(consumer.partitionsFor(dataTopic)).thenReturn(Collections.singletonList(new org.apache.kafka.common.PartitionInfo(dataTopic, 0, null, null, null)));
+
+                Map<TopicPartition, OffsetAndTimestamp> startOffsetsMap = new HashMap<>();
+                startOffsetsMap.put(dataPartition, new OffsetAndTimestamp(10L, 1000L));
+                when(consumer.offsetsForTimes(argThat(map -> map != null && map.containsValue(startTs)))).thenReturn(startOffsetsMap);
+
+                Map<TopicPartition, OffsetAndTimestamp> endOffsetsMap = new HashMap<>();
+                endOffsetsMap.put(dataPartition, new OffsetAndTimestamp(20L, 1000L));
+                when(consumer.offsetsForTimes(argThat(map -> map != null && map.containsValue(endTs)))).thenReturn(endOffsetsMap);
+
+                // Data records
+                // Mock GenericRecord for Key
+                GenericRecord mockKey = mock(GenericRecord.class);
+                when(mockKey.get("exec_id")).thenReturn(execId);
+
+                ConsumerRecord<Object, Object> dataRecord = new ConsumerRecord<>(dataTopic, 0, 15, 1500, org.apache.kafka.common.record.TimestampType.CREATE_TIME,
+                        0, 0, mockKey, "value", new org.apache.kafka.common.header.internals.RecordHeaders(), Optional.empty());
+
+                Map<TopicPartition, List<ConsumerRecord<Object, Object>>> dataRecordsMap = new HashMap<>();
+                dataRecordsMap.put(dataPartition, Collections.singletonList(dataRecord));
+                ConsumerRecords<Object, Object> dataRecords = new ConsumerRecords<>(dataRecordsMap);
+
+                // We need to chain the poll returns.
+                // 1. Poll for exec scan
+                // 2. Poll for data fetch
+                // 3. Poll for data fetch (empty to stop)
+                when(consumer.poll(any(Duration.class)))
+                        .thenReturn(execRecords)
+                        .thenReturn(dataRecords)
+                        .thenReturn(new ConsumerRecords<>(Collections.emptyMap()));
+
+                List<MessageDto> result = kafkaMessageService.getMessagesForExecution(Collections.singletonList(dataTopic), execId);
+
+                assertEquals(1, result.size());
+                assertEquals("value", result.get(0).content());
+                assertEquals(1500, result.get(0).timestamp());
+
+                verify(consumerPool, times(2)).borrowObject();
+                verify(consumerPool, times(2)).returnObject(consumer);
         }
 }

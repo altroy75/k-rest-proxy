@@ -201,6 +201,100 @@ public class KRestProxyIntegrationTest {
                 assertThat(messages.get(0).content()).doesNotContain("no-match");
         }
 
+        @Test
+        void testGetMessagesByExecution() throws Exception {
+                String topic = "test-integration-topic-by-exec";
+                String execIdsTopic = "execids";
+                String targetExecId = "exec-auto-scan";
+
+                // 1. Produce Start/End events to "execids" topic
+                // We assume the "execids" topic uses Strings (Avro primitive string schema) for Key and Value.
+                Map<String, Object> props = new HashMap<>();
+                props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
+                props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, KafkaAvroSerializer.class);
+                props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, KafkaAvroSerializer.class);
+                props.put("schema.registry.url",
+                        "http://" + schemaRegistry.getHost() + ":" + schemaRegistry.getMappedPort(8081));
+
+                ProducerFactory<Object, Object> producerFactory = new DefaultKafkaProducerFactory<>(props);
+                KafkaTemplate<Object, Object> template = new KafkaTemplate<>(producerFactory);
+
+                long now = System.currentTimeMillis();
+                long startTs = now - 10000;
+                long endTs = now + 10000;
+
+                // Produce "start"
+                // Note: KafkaAvroSerializer handles String if we treat it as a primitive.
+                // However, strictly speaking, we might need to be careful about how the schema is registered.
+                // Using plain strings here triggers implicit schema generation for primitive string.
+                template.send(execIdsTopic, 0, startTs, targetExecId, "start").get();
+
+                // Produce "end"
+                template.send(execIdsTopic, 0, endTs, targetExecId, "end").get();
+
+                // 2. Produce data messages to the data topic
+                // Define schemas
+                String keySchemaString = "{\"type\":\"record\",\"name\":\"Key\",\"fields\":[{\"name\":\"version\",\"type\":\"string\"},{\"name\":\"exec_id\",\"type\":\"string\"},{\"name\":\"timestamp\",\"type\":\"long\"}]}";
+                Schema keySchema = new Schema.Parser().parse(keySchemaString);
+
+                String valueSchemaString = "{\"type\":\"record\",\"name\":\"Value\",\"fields\":[{\"name\":\"data\",\"type\":\"string\"}]}";
+                Schema valueSchema = new Schema.Parser().parse(valueSchemaString);
+
+                // Message inside the window
+                GenericRecord keyInside = new GenericData.Record(keySchema);
+                keyInside.put("version", "v1");
+                keyInside.put("exec_id", targetExecId);
+                keyInside.put("timestamp", now);
+
+                GenericRecord valInside = new GenericData.Record(valueSchema);
+                valInside.put("data", "inside-window");
+
+                template.send(topic, 0, now, keyInside, valInside).get();
+
+                // Message outside the window (before start)
+                GenericRecord keyOutside = new GenericData.Record(keySchema);
+                keyOutside.put("version", "v1");
+                keyOutside.put("exec_id", targetExecId);
+                keyOutside.put("timestamp", startTs - 5000);
+
+                GenericRecord valOutside = new GenericData.Record(valueSchema);
+                valOutside.put("data", "outside-window");
+
+                template.send(topic, 0, startTs - 5000, keyOutside, valOutside).get();
+
+                Thread.sleep(2000);
+
+                // 3. Call the new API
+                HttpHeaders headers = new HttpHeaders();
+                headers.set("X-API-KEY", "secret-api-key");
+                HttpEntity<String> entity = new HttpEntity<>(headers);
+
+                String url = "https://localhost:" + port + "/api/v1/messages/by-execution" +
+                        "?topics=" + topic +
+                        "&execId=" + targetExecId;
+
+                org.springframework.web.client.RestTemplate looseRestTemplate = createInsecureRestTemplate();
+
+                ResponseEntity<List<MessageDto>> response = looseRestTemplate.exchange(
+                        url,
+                        HttpMethod.GET,
+                        entity,
+                        new ParameterizedTypeReference<List<MessageDto>>() {
+                        });
+
+                assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
+                List<MessageDto> messages = response.getBody();
+                assertThat(messages).isNotNull();
+
+                // Should find the one inside the window
+                boolean foundInside = messages.stream().anyMatch(m -> m.content().contains("inside-window"));
+                assertThat(foundInside).as("Should contain message inside time window").isTrue();
+
+                // Should NOT find the one outside the window
+                boolean foundOutside = messages.stream().anyMatch(m -> m.content().contains("outside-window"));
+                assertThat(foundOutside).as("Should NOT contain message outside time window").isFalse();
+        }
+
         private org.springframework.web.client.RestTemplate createInsecureRestTemplate() throws Exception {
                 javax.net.ssl.TrustManager[] trustAllCerts = new javax.net.ssl.TrustManager[] {
                                 new javax.net.ssl.X509TrustManager() {
