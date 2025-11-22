@@ -1,93 +1,115 @@
 package com.example.krestproxy.service;
 
+import com.example.krestproxy.dto.MessageDto;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.commons.pool2.ObjectPool;
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.OffsetAndTimestamp;
 import org.apache.kafka.common.TopicPartition;
 import org.springframework.beans.factory.annotation.Autowired;
-
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.*;
-import java.util.stream.Collectors;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 @Service
 public class KafkaMessageService {
 
-    private final ObjectPool<Consumer<String, Object>> consumerPool;
+    private final ObjectPool<Consumer<Object, Object>> consumerPool;
 
     @Autowired
-    public KafkaMessageService(ObjectPool<Consumer<String, Object>> consumerPool) {
+    public KafkaMessageService(ObjectPool<Consumer<Object, Object>> consumerPool) {
         this.consumerPool = consumerPool;
     }
 
-    public List<com.example.krestproxy.dto.MessageDto> getMessages(String topic, Instant startTime, Instant endTime) {
-        Consumer<String, Object> consumer = null;
+    public List<MessageDto> getMessages(String topic, Instant startTime, Instant endTime) {
+        return getMessagesInternal(topic, startTime, endTime, null);
+    }
+
+    public List<MessageDto> getMessagesWithExecId(String topic, Instant startTime, Instant endTime, String execId) {
+        return getMessagesInternal(topic, startTime, endTime, execId);
+    }
+
+    private List<MessageDto> getMessagesInternal(String topic, Instant startTime, Instant endTime, String execId) {
+        Consumer<Object, Object> consumer = null;
         try {
             consumer = consumerPool.borrowObject();
 
             // Assign all partitions of the topic to this consumer
-            List<TopicPartition> partitions = consumer.partitionsFor(topic).stream()
+            var partitions = consumer.partitionsFor(topic).stream()
                     .map(pi -> new TopicPartition(topic, pi.partition()))
-                    .collect(Collectors.toList());
+                    .toList();
 
             consumer.assign(partitions);
 
             // Find offsets for start time
-            Map<TopicPartition, Long> timestampsToSearch = new HashMap<>();
-            for (TopicPartition partition : partitions) {
+            var timestampsToSearch = new HashMap<TopicPartition, Long>();
+            for (var partition : partitions) {
                 timestampsToSearch.put(partition, startTime.toEpochMilli());
             }
 
-            Map<TopicPartition, OffsetAndTimestamp> startOffsets = consumer.offsetsForTimes(timestampsToSearch);
+            var startOffsets = consumer.offsetsForTimes(timestampsToSearch);
 
             // Find offsets for end time
-            Map<TopicPartition, Long> endTimestampsToSearch = new HashMap<>();
-            for (TopicPartition partition : partitions) {
+            var endTimestampsToSearch = new HashMap<TopicPartition, Long>();
+            for (var partition : partitions) {
                 endTimestampsToSearch.put(partition, endTime.toEpochMilli());
             }
 
-            Map<TopicPartition, OffsetAndTimestamp> endOffsets = consumer.offsetsForTimes(endTimestampsToSearch);
+            var endOffsets = consumer.offsetsForTimes(endTimestampsToSearch);
 
-            List<com.example.krestproxy.dto.MessageDto> messages = new ArrayList<>();
+            var messages = new ArrayList<MessageDto>();
 
-            for (TopicPartition partition : partitions) {
-                OffsetAndTimestamp startOffset = startOffsets.get(partition);
-                OffsetAndTimestamp endOffset = endOffsets.get(partition);
+            for (var partition : partitions) {
+                var startOffset = startOffsets.get(partition);
+                var endOffset = endOffsets.get(partition);
 
                 if (startOffset != null) {
                     consumer.seek(partition, startOffset.offset());
 
-                    boolean keepReading = true;
+                    var keepReading = true;
                     while (keepReading) {
-                        ConsumerRecords<String, Object> records = consumer.poll(Duration.ofMillis(100));
+                        var records = consumer.poll(Duration.ofMillis(100));
                         if (records.isEmpty()) {
                             break;
                         }
 
-                        for (ConsumerRecord<String, Object> record : records.records(partition)) {
+                        for (var record : records.records(partition)) {
                             if (record.timestamp() >= startTime.toEpochMilli()
                                     && record.timestamp() <= endTime.toEpochMilli()) {
-                                String content;
-                                Object value = record.value();
-                                if (value instanceof GenericRecord) {
-                                    content = convertAvroToJson((GenericRecord) value);
-                                } else if (value != null) {
-                                    content = value.toString();
-                                } else {
-                                    content = null;
+
+                                var match = true;
+                                if (execId != null) {
+                                    if (record.key() instanceof GenericRecord keyRecord) {
+                                        var execIdObj = keyRecord.get("exec_id");
+                                        if (execIdObj == null || !execIdObj.toString().equals(execId)) {
+                                            match = false;
+                                        }
+                                    } else {
+                                        // If key is not GenericRecord, we can't check exec_id, so mismatch
+                                        match = false;
+                                    }
                                 }
 
-                                messages.add(new com.example.krestproxy.dto.MessageDto(
-                                        content,
-                                        record.timestamp(),
-                                        record.partition(),
-                                        record.offset()));
+                                if (match) {
+                                    String content = switch (record.value()) {
+                                        case GenericRecord genericRecord -> convertAvroToJson(genericRecord);
+                                        case null -> null;
+                                        case Object o -> o.toString();
+                                    };
+
+                                    messages.add(new MessageDto(
+                                            content,
+                                            record.timestamp(),
+                                            record.partition(),
+                                            record.offset()));
+                                }
+
                             } else if (record.timestamp() > endTime.toEpochMilli()) {
                                 keepReading = false;
                                 break;
@@ -123,10 +145,10 @@ public class KafkaMessageService {
 
     private String convertAvroToJson(GenericRecord record) {
         try {
-            java.io.ByteArrayOutputStream outputStream = new java.io.ByteArrayOutputStream();
-            org.apache.avro.io.JsonEncoder jsonEncoder = org.apache.avro.io.EncoderFactory.get()
+            var outputStream = new java.io.ByteArrayOutputStream();
+            var jsonEncoder = org.apache.avro.io.EncoderFactory.get()
                     .jsonEncoder(record.getSchema(), outputStream);
-            org.apache.avro.generic.GenericDatumWriter<GenericRecord> writer = new org.apache.avro.generic.GenericDatumWriter<>(
+            var writer = new org.apache.avro.generic.GenericDatumWriter<GenericRecord>(
                     record.getSchema());
             writer.write(record, jsonEncoder);
             jsonEncoder.flush();

@@ -6,7 +6,6 @@ import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.kafka.clients.producer.ProducerConfig;
-import org.apache.kafka.common.serialization.StringSerializer;
 import org.junit.jupiter.api.Test;
 
 import org.springframework.boot.test.context.SpringBootTest;
@@ -75,23 +74,30 @@ public class KRestProxyIntegrationTest {
         @Test
         void testGetMessages() throws Exception {
                 String topic = "test-integration-topic";
-                String schemaString = "{\"type\":\"record\",\"name\":\"User\",\"fields\":[{\"name\":\"name\",\"type\":\"string\"},{\"name\":\"age\",\"type\":\"int\"}]}";
-                Schema schema = new Schema.Parser().parse(schemaString);
-                GenericRecord user = new GenericData.Record(schema);
+                String keySchemaString = "{\"type\":\"record\",\"name\":\"Key\",\"fields\":[{\"name\":\"version\",\"type\":\"string\"},{\"name\":\"exec_id\",\"type\":\"string\"},{\"name\":\"timestamp\",\"type\":\"long\"}]}";
+                Schema keySchema = new Schema.Parser().parse(keySchemaString);
+                GenericRecord key = new GenericData.Record(keySchema);
+                key.put("version", "v1");
+                key.put("exec_id", "exec-1");
+                key.put("timestamp", 1000L);
+
+                String valueSchemaString = "{\"type\":\"record\",\"name\":\"User\",\"fields\":[{\"name\":\"name\",\"type\":\"string\"},{\"name\":\"age\",\"type\":\"int\"}]}";
+                Schema valueSchema = new Schema.Parser().parse(valueSchemaString);
+                GenericRecord user = new GenericData.Record(valueSchema);
                 user.put("name", "Alice");
                 user.put("age", 30);
 
                 // Produce message
                 Map<String, Object> props = new HashMap<>();
                 props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
-                props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
+                props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, KafkaAvroSerializer.class);
                 props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, KafkaAvroSerializer.class);
                 props.put("schema.registry.url",
                                 "http://" + schemaRegistry.getHost() + ":" + schemaRegistry.getMappedPort(8081));
 
-                ProducerFactory<String, Object> producerFactory = new DefaultKafkaProducerFactory<>(props);
-                KafkaTemplate<String, Object> template = new KafkaTemplate<>(producerFactory);
-                template.send(topic, "user1", user).get();
+                ProducerFactory<Object, Object> producerFactory = new DefaultKafkaProducerFactory<>(props);
+                KafkaTemplate<Object, Object> template = new KafkaTemplate<>(producerFactory);
+                template.send(topic, key, user).get();
 
                 // Wait a bit for message to be available
                 Thread.sleep(2000);
@@ -105,22 +111,7 @@ public class KRestProxyIntegrationTest {
                                 "?startTime=" + Instant.now().minusSeconds(60).toString() +
                                 "&endTime=" + Instant.now().plusSeconds(60).toString();
 
-                // Note: TestRestTemplate might complain about self-signed cert if not
-                // configured,
-                // but let's try. If it fails, we might need to configure SSL context or use a
-                // custom RestTemplate.
-                // For simplicity in this test, we might assume the server is running with SSL
-                // but TestRestTemplate
-                // is configured to trust it or we might need to disable SSL verification for
-                // the test client.
-                // However, Spring Boot's TestRestTemplate is usually auto-configured.
-                // Let's see. Actually, since we generated a self-signed cert, we might hit
-                // issues.
-                // A common workaround for tests is to use a custom request factory that trusts
-                // all certs.
-                // But let's write the test first.
-
-                // Create SSL-ignoring RestTemplate
+                // SSL setup (assuming previous hack is still acceptable/needed in this context)
                 javax.net.ssl.TrustManager[] trustAllCerts = new javax.net.ssl.TrustManager[] {
                                 new javax.net.ssl.X509TrustManager() {
                                         public java.security.cert.X509Certificate[] getAcceptedIssuers() {
@@ -144,22 +135,6 @@ public class KRestProxyIntegrationTest {
 
                 org.springframework.web.client.RestTemplate looseRestTemplate = new org.springframework.web.client.RestTemplate();
 
-                // We can't easily set SSLContext on SimpleClientHttpRequestFactory directly
-                // without reflection or subclassing if we want to avoid global state,
-                // but setting default SSLSocketFactory affects HttpsURLConnection which
-                // SimpleClientHttpRequestFactory uses.
-                // A better way is using Apache HttpClient if available, but let's try setting
-                // global default for the test execution.
-                // Alternatively, we can use HttpComponentsClientHttpRequestFactory if we add
-                // httpclient dependency.
-
-                // Let's try a cleaner approach using a custom request factory if possible, or
-                // just the global setting which is hacky but works for tests.
-
-                // Actually, since we are using Spring Boot, we can use RestTemplateBuilder if
-                // we had it injected, but we can also just use the global SSL context hack for
-                // this test method.
-
                 ResponseEntity<List<MessageDto>> response = looseRestTemplate.exchange(
                                 url,
                                 HttpMethod.GET,
@@ -170,7 +145,81 @@ public class KRestProxyIntegrationTest {
                 assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
                 List<MessageDto> messages = response.getBody();
                 assertThat(messages).isNotEmpty();
-                assertThat(messages.get(0).getContent()).contains("\"name\":\"Alice\"");
-                assertThat(messages.get(0).getContent()).contains("\"age\":30");
+                assertThat(messages.get(0).content()).contains("\"name\":\"Alice\"");
+                assertThat(messages.get(0).content()).contains("\"age\":30");
+        }
+
+        @Test
+        void testGetMessagesWithExecId() throws Exception {
+            String topic = "test-integration-topic-filter";
+
+            // Define schemas
+            String keySchemaString = "{\"type\":\"record\",\"name\":\"Key\",\"fields\":[{\"name\":\"version\",\"type\":\"string\"},{\"name\":\"exec_id\",\"type\":\"string\"},{\"name\":\"timestamp\",\"type\":\"long\"}]}";
+            Schema keySchema = new Schema.Parser().parse(keySchemaString);
+
+            String valueSchemaString = "{\"type\":\"record\",\"name\":\"Value\",\"fields\":[{\"name\":\"data\",\"type\":\"string\"}]}";
+            Schema valueSchema = new Schema.Parser().parse(valueSchemaString);
+
+            // Produce messages
+            Map<String, Object> props = new HashMap<>();
+            props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
+            props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, KafkaAvroSerializer.class);
+            props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, KafkaAvroSerializer.class);
+            props.put("schema.registry.url",
+                            "http://" + schemaRegistry.getHost() + ":" + schemaRegistry.getMappedPort(8081));
+
+            ProducerFactory<Object, Object> producerFactory = new DefaultKafkaProducerFactory<>(props);
+            KafkaTemplate<Object, Object> template = new KafkaTemplate<>(producerFactory);
+
+            // Message 1: Matches exec_id
+            GenericRecord key1 = new GenericData.Record(keySchema);
+            key1.put("version", "v1");
+            key1.put("exec_id", "exec-target");
+            key1.put("timestamp", System.currentTimeMillis());
+
+            GenericRecord val1 = new GenericData.Record(valueSchema);
+            val1.put("data", "match");
+
+            template.send(topic, key1, val1).get();
+
+            // Message 2: Different exec_id
+            GenericRecord key2 = new GenericData.Record(keySchema);
+            key2.put("version", "v1");
+            key2.put("exec_id", "exec-other");
+            key2.put("timestamp", System.currentTimeMillis());
+
+            GenericRecord val2 = new GenericData.Record(valueSchema);
+            val2.put("data", "no-match");
+
+            template.send(topic, key2, val2).get();
+
+            // Wait a bit
+            Thread.sleep(2000);
+
+            // Call API
+            HttpHeaders headers = new HttpHeaders();
+            headers.set("X-API-KEY", "secret-api-key");
+            HttpEntity<String> entity = new HttpEntity<>(headers);
+
+            String url = "https://localhost:" + port + "/api/v1/messages/" + topic + "/filter" +
+                            "?startTime=" + Instant.now().minusSeconds(60).toString() +
+                            "&endTime=" + Instant.now().plusSeconds(60).toString() +
+                            "&execId=exec-target";
+
+            // Use loose RestTemplate
+            org.springframework.web.client.RestTemplate looseRestTemplate = new org.springframework.web.client.RestTemplate();
+
+            ResponseEntity<List<MessageDto>> response = looseRestTemplate.exchange(
+                            url,
+                            HttpMethod.GET,
+                            entity,
+                            new ParameterizedTypeReference<List<MessageDto>>() {
+                            });
+
+            assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
+            List<MessageDto> messages = response.getBody();
+            assertThat(messages).hasSize(1);
+            assertThat(messages.get(0).content()).contains("match");
+            assertThat(messages.get(0).content()).doesNotContain("no-match");
         }
 }
