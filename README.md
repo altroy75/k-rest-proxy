@@ -49,18 +49,18 @@ All endpoints require the `X-API-KEY` header for authentication.
 ### Get Messages by Time Range
 
 ```http
-GET /api/v1/messages/{topic}?startTime={ISO8601}&endTime={ISO8601}
+GET /api/v1/messages/{topic}?startTime={ISO8601}&endTime={ISO8601}&cursor={cursor}
 ```
 
-Fetches all messages from a topic within the specified time window.
+Fetches all messages from a topic within the specified time window. Returns a paginated response with a `nextCursor`.
 
 ### Filter by Execution ID
 
 ```http
-GET /api/v1/messages/{topic}/filter?startTime={ISO8601}&endTime={ISO8601}&execId={id}
+GET /api/v1/messages/{topic}/filter?startTime={ISO8601}&endTime={ISO8601}&execId={id}&cursor={cursor}
 ```
 
-Filters messages by execution ID (from Avro key field) within a time range.
+Filters messages by execution ID (from Avro key field) within a time range. Returns a paginated response.
 
 ### Query Multiple Topics
 

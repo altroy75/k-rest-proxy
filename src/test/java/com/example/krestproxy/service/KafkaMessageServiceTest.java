@@ -2,6 +2,8 @@ package com.example.krestproxy.service;
 
 import com.example.krestproxy.config.KafkaProperties;
 import com.example.krestproxy.dto.MessageDto;
+import com.example.krestproxy.dto.PaginatedResponse;
+import com.example.krestproxy.util.CursorUtil;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericRecord;
@@ -19,6 +21,7 @@ import java.time.Instant;
 import java.util.*;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
@@ -87,8 +90,9 @@ class KafkaMessageServiceTest {
                 when(consumer.poll(any())).thenReturn(records)
                                 .thenReturn(new ConsumerRecords<>(Collections.emptyMap()));
 
-                List<MessageDto> messages = kafkaMessageService.getMessages(topic, startTime,
-                                endTime);
+                PaginatedResponse<MessageDto> response = kafkaMessageService.getMessages(topic, startTime,
+                                endTime, null);
+                List<MessageDto> messages = response.data();
 
                 assertEquals(2, messages.size());
                 assertEquals("msg1", messages.get(0).content());
@@ -159,8 +163,9 @@ class KafkaMessageServiceTest {
                 when(consumer.poll(any())).thenReturn(records)
                                 .thenReturn(new ConsumerRecords<>(Collections.emptyMap()));
 
-                List<MessageDto> messages = kafkaMessageService.getMessagesWithExecId(topic, startTime,
-                                endTime, targetExecId);
+                PaginatedResponse<MessageDto> response = kafkaMessageService.getMessagesWithExecId(topic, startTime,
+                                endTime, targetExecId, null);
+                List<MessageDto> messages = response.data();
 
                 assertEquals(1, messages.size());
                 assertEquals("msg1", messages.get(0).content());
@@ -384,16 +389,68 @@ class KafkaMessageServiceTest {
                 when(consumer.poll(any())).thenReturn(records)
                                 .thenReturn(new ConsumerRecords<>(Collections.emptyMap()));
 
-                List<MessageDto> messages = kafkaMessageService.getMessages(topic, startTime,
-                                endTime);
+                PaginatedResponse<MessageDto> response = kafkaMessageService.getMessages(topic, startTime,
+                                endTime, null);
+                List<MessageDto> messages = response.data();
 
                 // Should only return 2 messages due to the limit
                 assertEquals(2, messages.size());
                 assertEquals("msg1", messages.get(0).content());
                 assertEquals("msg2", messages.get(1).content());
+                assertNotNull(response.nextCursor());
 
                 verify(consumer).assign(Collections.singletonList(partition0));
                 verify(consumer).seek(partition0, 0L);
+                verify(consumerPool).returnObject(consumer);
+        }
+
+        @Test
+        void getMessages_shouldUseCursorWhenProvided() throws Exception {
+                String topic = "test-topic";
+                Instant startTime = Instant.parse("2023-01-01T10:00:00Z");
+                Instant endTime = Instant.parse("2023-01-01T10:05:00Z");
+                TopicPartition partition0 = new TopicPartition(topic, 0);
+
+                // Create a cursor pointing to offset 5
+                Map<Integer, Long> cursorOffsets = new HashMap<>();
+                cursorOffsets.put(0, 5L);
+                String cursor = CursorUtil.createCursor(cursorOffsets);
+
+                when(consumerPool.borrowObject()).thenReturn(consumer);
+                when(consumer.partitionsFor(topic)).thenReturn(
+                                Collections.singletonList(
+                                                new org.apache.kafka.common.PartitionInfo(topic, 0, null, null, null)));
+
+                // Mock end offsets
+                Map<TopicPartition, OffsetAndTimestamp> endOffsets = new HashMap<>();
+                endOffsets.put(partition0, new OffsetAndTimestamp(10L, endTime.toEpochMilli()));
+                when(consumer.offsetsForTimes(
+                                argThat(map -> map != null && map.containsKey(partition0)
+                                                && map.get(partition0) == endTime.toEpochMilli())))
+                                .thenReturn(endOffsets);
+
+                // Mock poll
+                ConsumerRecord<Object, Object> record1 = new ConsumerRecord<>(topic, 0, 5L, startTime.toEpochMilli(),
+                                org.apache.kafka.common.record.TimestampType.CREATE_TIME, 0, 0, "key", "msg5",
+                                new org.apache.kafka.common.header.internals.RecordHeaders(), Optional.empty());
+
+                Map<TopicPartition, List<ConsumerRecord<Object, Object>>> recordsMap = new HashMap<>();
+                recordsMap.put(partition0, Arrays.asList(record1));
+                ConsumerRecords<Object, Object> records = new ConsumerRecords<>(recordsMap);
+
+                when(consumer.poll(any())).thenReturn(records)
+                                .thenReturn(new ConsumerRecords<>(Collections.emptyMap()));
+
+                PaginatedResponse<MessageDto> response = kafkaMessageService.getMessages(topic, startTime,
+                                endTime, cursor);
+                List<MessageDto> messages = response.data();
+
+                assertEquals(1, messages.size());
+                assertEquals("msg5", messages.get(0).content());
+                assertEquals(5L, messages.get(0).offset());
+
+                verify(consumer).assign(Collections.singletonList(partition0));
+                verify(consumer).seek(partition0, 5L); // Verify seek used cursor offset
                 verify(consumerPool).returnObject(consumer);
         }
 }

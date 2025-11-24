@@ -143,7 +143,9 @@ The application exposes a REST API to fetch Kafka messages.
 
 **Parameters:**
 -   `startTime`: Start timestamp (ISO 8601 format, e.g., `2023-10-27T10:00:00Z`).
+-   `startTime`: Start timestamp (ISO 8601 format, e.g., `2023-10-27T10:00:00Z`).
 -   `endTime`: End timestamp (ISO 8601 format, e.g., `2023-10-27T10:05:00Z`).
+-   `cursor`: (Optional) Cursor for pagination, returned in the previous response.
 
 **Authentication:**
 Requires an API Key header: `X-API-KEY`.
@@ -155,6 +157,23 @@ curl -k -H "X-API-KEY: your-api-key" \
      "https://localhost:8443/api/v1/messages/my-topic?startTime=2023-10-27T10:00:00Z&endTime=2023-10-27T10:05:00Z"
 ```
 
+**Response:**
+The response is a JSON object containing `data` (list of messages) and `nextCursor` (string).
+
+```json
+{
+  "data": [...],
+  "nextCursor": "eyIwIjoxMjN9"
+}
+```
+
+To fetch the next page, pass the `nextCursor` value as the `cursor` parameter:
+
+```bash
+curl -k -H "X-API-KEY: your-api-key" \
+     "https://localhost:8443/api/v1/messages/my-topic?startTime=2023-10-27T10:00:00Z&endTime=2023-10-27T10:05:00Z&cursor=eyIwIjoxMjN9"
+```
+
 ### Filter Messages by Execution ID
 
 **Endpoint:** `GET /api/v1/messages/{topic}/filter`
@@ -162,7 +181,10 @@ curl -k -H "X-API-KEY: your-api-key" \
 **Parameters:**
 -   `startTime`: Start timestamp.
 -   `endTime`: End timestamp.
+-   `startTime`: Start timestamp.
+-   `endTime`: End timestamp.
 -   `execId`: Execution ID to filter by.
+-   `cursor`: (Optional) Cursor for pagination.
 
 **Example Request:**
 
@@ -389,8 +411,8 @@ groups:
 - **Solution**: Increase `min-idle` to keep warm consumers ready
 
 **Problem**: OOM errors
-- **Cause**: Large result sets
-- **Solution**: Decrease `max-messages-per-request` or add pagination
+-   **Cause**: Large result sets
+-   **Solution**: Decrease `max-messages-per-request` or use cursor-based pagination
 
 **Problem**: Authentication fails with correct API key  
 - **Cause**: Key contains special characters or whitespace

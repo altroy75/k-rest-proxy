@@ -1,6 +1,7 @@
 package com.example.krestproxy.controller;
 
 import com.example.krestproxy.dto.MessageDto;
+import com.example.krestproxy.dto.PaginatedResponse;
 import com.example.krestproxy.service.KafkaMessageService;
 import com.example.krestproxy.validation.RequestValidator;
 import org.slf4j.Logger;
@@ -28,36 +29,38 @@ public class MessageController {
     }
 
     @GetMapping("/{topic}")
-    public ResponseEntity<List<MessageDto>> getMessages(
-            @PathVariable String topic,
-            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant startTime,
-            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant endTime) {
-
-        logger.info("GET /api/v1/messages/{} startTime={} endTime={}", topic, startTime, endTime);
-        requestValidator.validateTopicName(topic);
-        requestValidator.validateTimeRange(startTime, endTime);
-
-        var messages = kafkaMessageService.getMessages(topic, startTime, endTime);
-        logger.info("Returning {} messages for topic: {}", messages.size(), topic);
-        return ResponseEntity.ok(messages);
-    }
-
-    @GetMapping("/{topic}/filter")
-    public ResponseEntity<List<MessageDto>> getMessagesWithExecId(
+    public ResponseEntity<PaginatedResponse<MessageDto>> getMessages(
             @PathVariable String topic,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant startTime,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant endTime,
-            @RequestParam String execId) {
+            @RequestParam(required = false) String cursor) {
 
-        logger.info("GET /api/v1/messages/{}/filter startTime={} endTime={} execId={}",
-                topic, startTime, endTime, execId);
+        logger.info("GET /api/v1/messages/{} startTime={} endTime={} cursor={}", topic, startTime, endTime, cursor);
+        requestValidator.validateTopicName(topic);
+        requestValidator.validateTimeRange(startTime, endTime);
+
+        var response = kafkaMessageService.getMessages(topic, startTime, endTime, cursor);
+        logger.info("Returning {} messages for topic: {}", response.data().size(), topic);
+        return ResponseEntity.ok(response);
+    }
+
+    @GetMapping("/{topic}/filter")
+    public ResponseEntity<PaginatedResponse<MessageDto>> getMessagesWithExecId(
+            @PathVariable String topic,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant startTime,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant endTime,
+            @RequestParam String execId,
+            @RequestParam(required = false) String cursor) {
+
+        logger.info("GET /api/v1/messages/{}/filter startTime={} endTime={} execId={} cursor={}",
+                topic, startTime, endTime, execId, cursor);
         requestValidator.validateTopicName(topic);
         requestValidator.validateTimeRange(startTime, endTime);
         requestValidator.validateExecutionId(execId);
 
-        var messages = kafkaMessageService.getMessagesWithExecId(topic, startTime, endTime, execId);
-        logger.info("Returning {} messages for topic: {} with execId: {}", messages.size(), topic, execId);
-        return ResponseEntity.ok(messages);
+        var response = kafkaMessageService.getMessagesWithExecId(topic, startTime, endTime, execId, cursor);
+        logger.info("Returning {} messages for topic: {} with execId: {}", response.data().size(), topic, execId);
+        return ResponseEntity.ok(response);
     }
 
     @GetMapping("/filter")

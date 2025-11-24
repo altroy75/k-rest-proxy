@@ -2,8 +2,10 @@ package com.example.krestproxy.service;
 
 import com.example.krestproxy.config.KafkaProperties;
 import com.example.krestproxy.dto.MessageDto;
+import com.example.krestproxy.dto.PaginatedResponse;
 import com.example.krestproxy.exception.ExecutionNotFoundException;
 import com.example.krestproxy.exception.KafkaOperationException;
+import com.example.krestproxy.util.CursorUtil;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.commons.pool2.ObjectPool;
 import org.apache.kafka.clients.consumer.Consumer;
@@ -20,6 +22,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 @Service
 public class KafkaMessageService {
@@ -40,7 +43,13 @@ public class KafkaMessageService {
     public List<MessageDto> getMessagesForExecution(List<String> topics, String execId) {
         logger.info("Fetching messages for execution: {}, topics: {}", execId, topics);
         var times = findExecutionTimes(execId);
-        return getMessagesInternal(topics, times.start(), times.end(), execId);
+        // For multi-topic execution fetch, we don't support cursor pagination yet as
+        // per requirement "single topic"
+        // But we need to adapt to the internal method signature change.
+        // We can return just the list from the paginated response for now or keep it as
+        // list if we overload internal.
+        // Let's overload internal or just unwrap.
+        return getMessagesInternal(topics, times.start(), times.end(), execId, null).data();
     }
 
     public record ExecTime(Instant start, Instant end) {
@@ -106,26 +115,28 @@ public class KafkaMessageService {
         }
     }
 
-    public List<MessageDto> getMessages(String topic, Instant startTime, Instant endTime) {
-        logger.info("Fetching messages from topic: {}, startTime: {}, endTime: {}", topic, startTime, endTime);
-        return getMessagesInternal(List.of(topic), startTime, endTime, null);
+    public PaginatedResponse<MessageDto> getMessages(String topic, Instant startTime, Instant endTime, String cursor) {
+        logger.info("Fetching messages from topic: {}, startTime: {}, endTime: {}, cursor: {}", topic, startTime,
+                endTime, cursor);
+        return getMessagesInternal(List.of(topic), startTime, endTime, null, cursor);
     }
 
-    public List<MessageDto> getMessagesWithExecId(String topic, Instant startTime, Instant endTime, String execId) {
-        logger.info("Fetching messages from topic: {} with execId: {}, startTime: {}, endTime: {}",
-                topic, execId, startTime, endTime);
-        return getMessagesInternal(List.of(topic), startTime, endTime, execId);
+    public PaginatedResponse<MessageDto> getMessagesWithExecId(String topic, Instant startTime, Instant endTime,
+            String execId, String cursor) {
+        logger.info("Fetching messages from topic: {} with execId: {}, startTime: {}, endTime: {}, cursor: {}",
+                topic, execId, startTime, endTime, cursor);
+        return getMessagesInternal(List.of(topic), startTime, endTime, execId, cursor);
     }
 
     public List<MessageDto> getMessagesFromTopics(List<String> topics, Instant startTime, Instant endTime,
             String execId) {
         logger.info("Fetching messages from topics: {} with execId: {}, startTime: {}, endTime: {}",
                 topics, execId, startTime, endTime);
-        return getMessagesInternal(topics, startTime, endTime, execId);
+        return getMessagesInternal(topics, startTime, endTime, execId, null).data();
     }
 
-    private List<MessageDto> getMessagesInternal(java.util.Collection<String> topics, Instant startTime,
-            Instant endTime, String execId) {
+    private PaginatedResponse<MessageDto> getMessagesInternal(java.util.Collection<String> topics, Instant startTime,
+            Instant endTime, String execId, String cursor) {
         Consumer<Object, Object> consumer = null;
         try {
             logger.debug("Borrowing consumer from pool");
@@ -143,13 +154,23 @@ public class KafkaMessageService {
 
             consumer.assign(partitions);
 
-            // Find offsets for start time
-            var timestampsToSearch = new HashMap<TopicPartition, Long>();
-            for (var partition : partitions) {
-                timestampsToSearch.put(partition, startTime.toEpochMilli());
+            Map<Integer, Long> cursorOffsets = CursorUtil.parseCursor(cursor);
+            Map<Integer, Long> nextCursorOffsets = new HashMap<>();
+
+            // Initialize nextCursorOffsets with cursorOffsets or empty
+            if (cursorOffsets != null) {
+                nextCursorOffsets.putAll(cursorOffsets);
             }
 
-            var startOffsets = consumer.offsetsForTimes(timestampsToSearch);
+            // Find offsets for start time if no cursor
+            var timestampsToSearch = new HashMap<TopicPartition, Long>();
+            if (cursorOffsets == null) {
+                for (var partition : partitions) {
+                    timestampsToSearch.put(partition, startTime.toEpochMilli());
+                }
+            }
+
+            var startOffsets = cursorOffsets == null ? consumer.offsetsForTimes(timestampsToSearch) : null;
 
             // Find offsets for end time
             var endTimestampsToSearch = new HashMap<TopicPartition, Long>();
@@ -161,87 +182,107 @@ public class KafkaMessageService {
 
             var messages = new ArrayList<MessageDto>();
             int maxMessages = kafkaProperties.getMaxMessagesPerRequest();
+            boolean limitReached = false;
 
             for (var partition : partitions) {
-                var startOffset = startOffsets.get(partition);
+                long seekOffset;
+                if (cursorOffsets != null && cursorOffsets.containsKey(partition.partition())) {
+                    seekOffset = cursorOffsets.get(partition.partition());
+                } else if (startOffsets != null && startOffsets.get(partition) != null) {
+                    seekOffset = startOffsets.get(partition).offset();
+                } else {
+                    // If no cursor and no start offset found (e.g. time is future), skip
+                    continue;
+                }
+
                 var endOffset = endOffsets.get(partition);
 
-                if (startOffset != null) {
-                    consumer.seek(partition, startOffset.offset());
+                // If we are already past the end time for this partition, skip
+                if (endOffset != null && seekOffset >= endOffset.offset()) {
+                    continue;
+                }
 
-                    var keepReading = true;
-                    while (keepReading) {
-                        var records = consumer.poll(Duration.ofMillis(kafkaProperties.getPollTimeoutMs()));
-                        if (records.isEmpty()) {
+                consumer.seek(partition, seekOffset);
+
+                var keepReading = true;
+                while (keepReading) {
+                    var records = consumer.poll(Duration.ofMillis(kafkaProperties.getPollTimeoutMs()));
+                    if (records.isEmpty()) {
+                        break;
+                    }
+
+                    for (var record : records.records(partition)) {
+                        // Update next cursor offset to next offset
+                        nextCursorOffsets.put(partition.partition(), record.offset() + 1);
+
+                        if (record.timestamp() >= startTime.toEpochMilli()
+                                && record.timestamp() <= endTime.toEpochMilli()) {
+
+                            var match = true;
+                            if (execId != null) {
+                                if (record.key() instanceof GenericRecord keyRecord) {
+                                    var execIdObj = keyRecord.get("exec_id");
+                                    if (execIdObj == null || !execIdObj.toString().equals(execId)) {
+                                        match = false;
+                                    }
+                                } else {
+                                    // If key is not GenericRecord, we can't check exec_id, so mismatch
+                                    match = false;
+                                }
+                            }
+
+                            if (match) {
+                                String content = switch (record.value()) {
+                                    case GenericRecord genericRecord -> convertAvroToJson(genericRecord);
+                                    case null -> null;
+                                    case Object o -> o.toString();
+                                };
+
+                                messages.add(new MessageDto(
+                                        record.topic(),
+                                        content,
+                                        record.timestamp(),
+                                        record.partition(),
+                                        record.offset()));
+
+                                // Check if we've reached the maximum message limit
+                                if (messages.size() >= maxMessages) {
+                                    logger.warn("Reached maximum message limit of {} for topics: {}", maxMessages,
+                                            topics);
+                                    keepReading = false;
+                                    limitReached = true;
+                                    break;
+                                }
+                            }
+
+                        } else if (record.timestamp() > endTime.toEpochMilli()) {
+                            keepReading = false;
                             break;
                         }
 
-                        for (var record : records.records(partition)) {
-                            if (record.timestamp() >= startTime.toEpochMilli()
-                                    && record.timestamp() <= endTime.toEpochMilli()) {
-
-                                var match = true;
-                                if (execId != null) {
-                                    if (record.key() instanceof GenericRecord keyRecord) {
-                                        var execIdObj = keyRecord.get("exec_id");
-                                        if (execIdObj == null || !execIdObj.toString().equals(execId)) {
-                                            match = false;
-                                        }
-                                    } else {
-                                        // If key is not GenericRecord, we can't check exec_id, so mismatch
-                                        match = false;
-                                    }
-                                }
-
-                                if (match) {
-                                    String content = switch (record.value()) {
-                                        case GenericRecord genericRecord -> convertAvroToJson(genericRecord);
-                                        case null -> null;
-                                        case Object o -> o.toString();
-                                    };
-
-                                    messages.add(new MessageDto(
-                                            record.topic(),
-                                            content,
-                                            record.timestamp(),
-                                            record.partition(),
-                                            record.offset()));
-
-                                    // Check if we've reached the maximum message limit
-                                    if (messages.size() >= maxMessages) {
-                                        logger.warn("Reached maximum message limit of {} for topics: {}", maxMessages,
-                                                topics);
-                                        keepReading = false;
-                                        break;
-                                    }
-                                }
-
-                            } else if (record.timestamp() > endTime.toEpochMilli()) {
-                                keepReading = false;
-                                break;
-                            }
-
-                            // Optimization: if we have a target end offset, we can check position.
-                            if (endOffset != null && record.offset() >= endOffset.offset()) {
-                                keepReading = false;
-                                break;
-                            }
-                        }
-
-                        // Safety break if we reached end of partition
-                        if (endOffset != null && consumer.position(partition) >= endOffset.offset()) {
+                        // Optimization: if we have a target end offset, we can check position.
+                        if (endOffset != null && record.offset() >= endOffset.offset()) {
                             keepReading = false;
+                            break;
                         }
+                    }
+
+                    // Safety break if we reached end of partition
+                    if (endOffset != null && consumer.position(partition) >= endOffset.offset()) {
+                        keepReading = false;
                     }
                 }
 
                 // Stop processing additional partitions if we've reached the message limit
-                if (messages.size() >= maxMessages) {
+                if (limitReached) {
                     break;
                 }
             }
+
+            String nextCursor = limitReached ? CursorUtil.createCursor(nextCursorOffsets) : null;
+
             logger.info("Retrieved {} messages from topics: {}", messages.size(), topics);
-            return messages;
+            return new PaginatedResponse<>(messages, nextCursor);
         } catch (Exception e) {
             logger.error("Error fetching messages from Kafka topics: {}", topics, e);
             throw new KafkaOperationException("Error fetching messages from Kafka", e);
