@@ -49,4 +49,37 @@ public class MessageController {
         var messages = kafkaMessageService.getMessagesWithExecId(topic, startTime, endTime, execId);
         return ResponseEntity.ok(messages);
     }
+
+    @GetMapping("/filter")
+    public ResponseEntity<List<MessageDto>> getMessagesFromTopics(
+            @RequestParam List<String> topics,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant startTime,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant endTime,
+            @RequestParam(required = false) String execId) {
+
+        if (startTime.isAfter(endTime)) {
+            return ResponseEntity.badRequest().build();
+        }
+
+        var messages = kafkaMessageService.getMessagesFromTopics(topics, startTime, endTime, execId);
+        return ResponseEntity.ok(messages);
+    }
+
+    @GetMapping("/by-execution")
+    public ResponseEntity<List<MessageDto>> getMessagesByExecution(
+            @RequestParam List<String> topics,
+            @RequestParam String execId) {
+        try {
+            var messages = kafkaMessageService.getMessagesForExecution(topics, execId);
+            return ResponseEntity.ok(messages);
+        } catch (RuntimeException e) {
+            // Simplistic error handling: if "Could not find start and/or end time" (or other runtime errors), return 404
+            // In a real app, we might want to distinguish 404 from 500.
+            // But the requirement said "fail". 404 is a failure indicating "Not Found".
+            if (e.getMessage() != null && e.getMessage().contains("Could not find")) {
+                return ResponseEntity.notFound().build();
+            }
+            throw e;
+        }
+    }
 }

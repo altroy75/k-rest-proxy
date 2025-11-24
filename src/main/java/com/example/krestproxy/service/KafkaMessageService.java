@@ -16,34 +16,116 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class KafkaMessageService {
 
+    private static final String EXEC_IDS_TOPIC = "execids";
     private final ObjectPool<Consumer<Object, Object>> consumerPool;
+    private final Map<String, ExecTime> execTimeCache = new ConcurrentHashMap<>();
 
     @Autowired
     public KafkaMessageService(ObjectPool<Consumer<Object, Object>> consumerPool) {
         this.consumerPool = consumerPool;
     }
 
+    public List<MessageDto> getMessagesForExecution(List<String> topics, String execId) {
+        var times = findExecutionTimes(execId);
+        return getMessagesInternal(topics, times.start(), times.end(), execId);
+    }
+
+    private record ExecTime(Instant start, Instant end) {
+    }
+
+    private ExecTime findExecutionTimes(String execId) {
+        if (execTimeCache.containsKey(execId)) {
+            return execTimeCache.get(execId);
+        }
+
+        Consumer<Object, Object> consumer = null;
+        try {
+            consumer = consumerPool.borrowObject();
+            var topicPartition = new TopicPartition(EXEC_IDS_TOPIC, 0);
+            consumer.assign(List.of(topicPartition));
+            consumer.seekToBeginning(List.of(topicPartition));
+
+            Instant startTime = null;
+            Instant endTime = null;
+
+            // Assuming "few days" retention isn't massive, but we should be careful.
+            // We scan until we find both or reach end.
+            while (startTime == null || endTime == null) {
+                var records = consumer.poll(Duration.ofMillis(100));
+                if (records.isEmpty()) {
+                    break;
+                }
+
+                for (var record : records) {
+                    String keyStr = record.key().toString();
+                    if (execId.equals(keyStr)) {
+                        String valStr = record.value().toString();
+                        if ("start".equals(valStr)) {
+                            startTime = Instant.ofEpochMilli(record.timestamp());
+                        } else if ("end".equals(valStr)) {
+                            endTime = Instant.ofEpochMilli(record.timestamp());
+                        }
+                    }
+                }
+            }
+
+            if (startTime == null || endTime == null) {
+                throw new RuntimeException("Could not find start and/or end time for execution ID: " + execId);
+            }
+
+            var execTime = new ExecTime(startTime, endTime);
+            execTimeCache.put(execId, execTime);
+            return execTime;
+
+        } catch (Exception e) {
+            if (e instanceof RuntimeException re) {
+                throw re;
+            }
+            throw new RuntimeException("Error scanning execids topic", e);
+        } finally {
+            if (consumer != null) {
+                try {
+                    consumerPool.returnObject(consumer);
+                } catch (Exception e) {
+                    // Log error
+                }
+            }
+        }
+    }
+
     public List<MessageDto> getMessages(String topic, Instant startTime, Instant endTime) {
-        return getMessagesInternal(topic, startTime, endTime, null);
+        return getMessagesInternal(List.of(topic), startTime, endTime, null);
     }
 
     public List<MessageDto> getMessagesWithExecId(String topic, Instant startTime, Instant endTime, String execId) {
-        return getMessagesInternal(topic, startTime, endTime, execId);
+        return getMessagesInternal(List.of(topic), startTime, endTime, execId);
     }
 
-    private List<MessageDto> getMessagesInternal(String topic, Instant startTime, Instant endTime, String execId) {
+    public List<MessageDto> getMessagesFromTopics(List<String> topics, Instant startTime, Instant endTime,
+            String execId) {
+        return getMessagesInternal(topics, startTime, endTime, execId);
+    }
+
+    private List<MessageDto> getMessagesInternal(java.util.Collection<String> topics, Instant startTime,
+            Instant endTime, String execId) {
         Consumer<Object, Object> consumer = null;
         try {
             consumer = consumerPool.borrowObject();
 
-            // Assign all partitions of the topic to this consumer
-            var partitions = consumer.partitionsFor(topic).stream()
-                    .map(pi -> new TopicPartition(topic, pi.partition()))
-                    .toList();
+            var partitions = new ArrayList<TopicPartition>();
+            for (String topic : topics) {
+                var partitionInfos = consumer.partitionsFor(topic);
+                if (partitionInfos != null) {
+                    partitions.addAll(partitionInfos.stream()
+                            .map(pi -> new TopicPartition(topic, pi.partition()))
+                            .toList());
+                }
+            }
 
             consumer.assign(partitions);
 
@@ -104,6 +186,7 @@ public class KafkaMessageService {
                                     };
 
                                     messages.add(new MessageDto(
+                                            record.topic(),
                                             content,
                                             record.timestamp(),
                                             record.partition(),
