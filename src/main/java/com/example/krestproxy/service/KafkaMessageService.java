@@ -12,6 +12,7 @@ import org.apache.avro.io.EncoderFactory;
 import org.apache.avro.io.JsonEncoder;
 import org.apache.commons.pool2.ObjectPool;
 import org.apache.kafka.clients.consumer.Consumer;
+import org.apache.kafka.clients.consumer.OffsetAndTimestamp;
 import org.apache.kafka.common.TopicPartition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -155,171 +156,21 @@ public class KafkaMessageService {
             logger.debug("Borrowing consumer from pool");
             consumer = consumerPool.borrowObject();
 
-            var partitions = new ArrayList<TopicPartition>();
-            for (String topic : topics) {
-                var partitionInfos = consumer.partitionsFor(topic);
-                if (partitionInfos != null) {
-                    partitions.addAll(partitionInfos.stream()
-                            .map(pi -> new TopicPartition(topic, pi.partition()))
-                            .toList());
-                }
-            }
+            List<TopicPartition> partitions = assignPartitions(consumer, topics);
+            Map<String, Map<Integer, Long>> cursorOffsets = CursorUtil.parseCursor(cursor);
+            Map<String, Map<Integer, Long>> nextCursorOffsets = initializeNextCursorOffsets(cursorOffsets);
 
-            consumer.assign(partitions);
-
-            Map<Integer, Long> cursorOffsets = CursorUtil.parseCursor(cursor);
-            Map<Integer, Long> nextCursorOffsets = new HashMap<>();
-
-            // Initialize nextCursorOffsets with cursorOffsets or empty
-            if (cursorOffsets != null) {
-                nextCursorOffsets.putAll(cursorOffsets);
-            }
-
-            // Find offsets for start time if no cursor
-            var timestampsToSearch = new HashMap<TopicPartition, Long>();
-            if (cursorOffsets == null) {
-                for (var partition : partitions) {
-                    timestampsToSearch.put(partition, startTime.toEpochMilli());
-                }
-            }
-
-            var startOffsets = cursorOffsets == null ? consumer.offsetsForTimes(timestampsToSearch) : null;
-
-            // Find offsets for end time
-            var endTimestampsToSearch = new HashMap<TopicPartition, Long>();
-            for (var partition : partitions) {
-                endTimestampsToSearch.put(partition, endTime.toEpochMilli());
-            }
-
-            var endOffsets = consumer.offsetsForTimes(endTimestampsToSearch);
+            Map<TopicPartition, OffsetAndTimestamp> startOffsets = calculateStartOffsets(consumer, partitions,
+                    startTime, cursorOffsets);
+            Map<TopicPartition, OffsetAndTimestamp> endOffsets = calculateEndOffsets(consumer, partitions, endTime);
 
             var messages = new ArrayList<MessageDto>();
             int maxMessages = kafkaProperties.getMaxMessagesPerRequest();
-            boolean limitReached = false;
+            boolean limitReached = fetchMessages(consumer, partitions, startTime, endTime, execId, cursorOffsets,
+                    startOffsets, endOffsets, messages, maxMessages, nextCursorOffsets);
 
-            for (var partition : partitions) {
-                long seekOffset;
-                if (cursorOffsets != null && cursorOffsets.containsKey(partition.partition())) {
-                    seekOffset = cursorOffsets.get(partition.partition());
-                } else if (startOffsets != null && startOffsets.get(partition) != null) {
-                    seekOffset = startOffsets.get(partition).offset();
-                } else {
-                    // If no cursor and no start offset found (e.g. time is future), skip
-                    continue;
-                }
-
-                var endOffset = endOffsets.get(partition);
-
-                // If we are already past the end time for this partition, skip
-                if (endOffset != null && seekOffset >= endOffset.offset()) {
-                    continue;
-                }
-
-                consumer.seek(partition, seekOffset);
-
-                var keepReading = true;
-                while (keepReading) {
-                    var records = consumer.poll(Duration.ofMillis(kafkaProperties.getPollTimeoutMs()));
-                    if (records.isEmpty()) {
-                        break;
-                    }
-
-                    for (var record : records.records(partition)) {
-                        // Update next cursor offset to next offset
-                        nextCursorOffsets.put(partition.partition(), record.offset() + 1);
-
-                        if (record.timestamp() >= startTime.toEpochMilli()
-                                && record.timestamp() <= endTime.toEpochMilli()) {
-
-                            var match = true;
-                            if (execId != null) {
-                                if (record.key() instanceof GenericRecord keyRecord) {
-                                    var execIdObj = keyRecord.get("exec_id");
-                                    if (execIdObj == null || !execIdObj.toString().equals(execId)) {
-                                        match = false;
-                                    }
-                                } else {
-                                    // If key is not GenericRecord, we can't check exec_id, so mismatch
-                                    match = false;
-                                }
-                            }
-
-                            if (match) {
-                                String content = switch (record.value()) {
-                                    case GenericRecord genericRecord -> convertAvroToJson(genericRecord);
-                                    case null -> null;
-                                    case Object o -> o.toString();
-                                };
-
-                                messages.add(new MessageDto(
-                                        record.topic(),
-                                        content,
-                                        record.timestamp(),
-                                        record.partition(),
-                                        record.offset()));
-
-                                // Check if we've reached the maximum message limit
-                                if (messages.size() >= maxMessages) {
-                                    logger.warn("Reached maximum message limit of {} for topics: {}", maxMessages,
-                                            topics);
-                                    keepReading = false;
-                                    limitReached = true;
-                                    break;
-                                }
-                            }
-
-                        } else if (record.timestamp() > endTime.toEpochMilli()) {
-                            keepReading = false;
-                            break;
-                        }
-
-                        // Optimization: if we have a target end offset, we can check position.
-                        if (endOffset != null && record.offset() >= endOffset.offset()) {
-                            keepReading = false;
-                            break;
-                        }
-                    }
-
-                    // Safety break if we reached end of partition
-                    if (endOffset != null && consumer.position(partition) >= endOffset.offset()) {
-                        keepReading = false;
-                    }
-                }
-
-                // Stop processing additional partitions if we've reached the message limit
-                if (limitReached) {
-                    break;
-                }
-            }
-
-            boolean hasMore = false;
-            if (limitReached) {
-                for (var partition : partitions) {
-                    var endOffsetRecord = endOffsets.get(partition);
-                    if (endOffsetRecord == null) {
-                        continue; // No messages in the time range for this partition
-                    }
-                    var endOffset = endOffsetRecord.offset();
-
-                    Long currentPosition = nextCursorOffsets.get(partition.partition());
-
-                    if (currentPosition == null) {
-                        // This partition hasn't been read from yet.
-                        // We need to find its starting offset for this request.
-                        if (cursorOffsets != null && cursorOffsets.containsKey(partition.partition())) {
-                            currentPosition = cursorOffsets.get(partition.partition());
-                        } else if (startOffsets != null && startOffsets.get(partition) != null) {
-                            currentPosition = startOffsets.get(partition).offset();
-                        }
-                    }
-
-                    if (currentPosition != null && currentPosition < endOffset) {
-                        hasMore = true;
-                        break;
-                    }
-                }
-            }
-
+            boolean hasMore = determineHasMore(limitReached, partitions, endOffsets, nextCursorOffsets, cursorOffsets,
+                    startOffsets);
             String nextCursor = hasMore ? CursorUtil.createCursor(nextCursorOffsets) : null;
 
             logger.info("Retrieved {} messages from topics: {}", messages.size(), topics);
@@ -336,6 +187,196 @@ public class KafkaMessageService {
                 }
             }
         }
+    }
+
+    private Map<String, Map<Integer, Long>> initializeNextCursorOffsets(Map<String, Map<Integer, Long>> cursorOffsets) {
+        Map<String, Map<Integer, Long>> nextCursorOffsets = new HashMap<>();
+        if (cursorOffsets != null) {
+            for (var entry : cursorOffsets.entrySet()) {
+                nextCursorOffsets.put(entry.getKey(), new HashMap<>(entry.getValue()));
+            }
+        }
+        return nextCursorOffsets;
+    }
+
+    private List<TopicPartition> assignPartitions(Consumer<Object, Object> consumer,
+            java.util.Collection<String> topics) {
+        var partitions = new ArrayList<TopicPartition>();
+        for (String topic : topics) {
+            var partitionInfos = consumer.partitionsFor(topic);
+            if (partitionInfos != null) {
+                partitions.addAll(partitionInfos.stream()
+                        .map(pi -> new TopicPartition(topic, pi.partition()))
+                        .toList());
+            }
+        }
+        consumer.assign(partitions);
+        return partitions;
+    }
+
+    private Map<TopicPartition, OffsetAndTimestamp> calculateStartOffsets(Consumer<Object, Object> consumer,
+            List<TopicPartition> partitions, Instant startTime, Map<String, Map<Integer, Long>> cursorOffsets) {
+        // If we have a cursor for a partition, we don't need to look up the start
+        // offset by time for that partition.
+        // However, the consumer.offsetsForTimes API takes a map.
+        // We can just look up all and then override with cursor if present.
+
+        var timestampsToSearch = new HashMap<TopicPartition, Long>();
+        for (var partition : partitions) {
+            boolean hasCursor = cursorOffsets != null
+                    && cursorOffsets.containsKey(partition.topic())
+                    && cursorOffsets.get(partition.topic()).containsKey(partition.partition());
+
+            if (!hasCursor) {
+                timestampsToSearch.put(partition, startTime.toEpochMilli());
+            }
+        }
+
+        if (timestampsToSearch.isEmpty()) {
+            return new HashMap<>();
+        }
+
+        return consumer.offsetsForTimes(timestampsToSearch);
+    }
+
+    private Map<TopicPartition, OffsetAndTimestamp> calculateEndOffsets(Consumer<Object, Object> consumer,
+            List<TopicPartition> partitions, Instant endTime) {
+        var endTimestampsToSearch = new HashMap<TopicPartition, Long>();
+        for (var partition : partitions) {
+            endTimestampsToSearch.put(partition, endTime.toEpochMilli());
+        }
+        return consumer.offsetsForTimes(endTimestampsToSearch);
+    }
+
+    private boolean fetchMessages(Consumer<Object, Object> consumer, List<TopicPartition> partitions, Instant startTime,
+            Instant endTime, String execId,
+            Map<String, Map<Integer, Long>> cursorOffsets, Map<TopicPartition, OffsetAndTimestamp> startOffsets,
+            Map<TopicPartition, OffsetAndTimestamp> endOffsets,
+            List<MessageDto> messages, int maxMessages, Map<String, Map<Integer, Long>> nextCursorOffsets) {
+        boolean limitReached = false;
+        for (var partition : partitions) {
+            long seekOffset;
+            if (cursorOffsets != null
+                    && cursorOffsets.containsKey(partition.topic())
+                    && cursorOffsets.get(partition.topic()).containsKey(partition.partition())) {
+                seekOffset = cursorOffsets.get(partition.topic()).get(partition.partition());
+            } else if (startOffsets != null && startOffsets.get(partition) != null) {
+                seekOffset = startOffsets.get(partition).offset();
+            } else {
+                continue;
+            }
+
+            var endOffset = endOffsets.get(partition);
+            if (endOffset != null && seekOffset >= endOffset.offset()) {
+                continue;
+            }
+
+            consumer.seek(partition, seekOffset);
+
+            var keepReading = true;
+            while (keepReading) {
+                var records = consumer.poll(Duration.ofMillis(kafkaProperties.getPollTimeoutMs()));
+                if (records.isEmpty()) {
+                    break;
+                }
+
+                for (var record : records.records(partition)) {
+                    nextCursorOffsets.computeIfAbsent(partition.topic(), k -> new HashMap<>())
+                            .put(partition.partition(), record.offset() + 1);
+
+                    if (record.timestamp() >= startTime.toEpochMilli()
+                            && record.timestamp() <= endTime.toEpochMilli()) {
+                        if (isMatch(record, execId)) {
+                            messages.add(createMessageDto(record));
+                            if (messages.size() >= maxMessages) {
+                                logger.warn("Reached maximum message limit of {} for topics", maxMessages);
+                                keepReading = false;
+                                limitReached = true;
+                                break;
+                            }
+                        }
+                    } else if (record.timestamp() > endTime.toEpochMilli()) {
+                        keepReading = false;
+                        break;
+                    }
+
+                    if (endOffset != null && record.offset() >= endOffset.offset()) {
+                        keepReading = false;
+                        break;
+                    }
+                }
+
+                if (endOffset != null && consumer.position(partition) >= endOffset.offset()) {
+                    keepReading = false;
+                }
+            }
+
+            if (limitReached) {
+                break;
+            }
+        }
+        return limitReached;
+    }
+
+    private boolean isMatch(org.apache.kafka.clients.consumer.ConsumerRecord<Object, Object> record, String execId) {
+        if (execId == null) {
+            return true;
+        }
+        if (record.key() instanceof GenericRecord keyRecord) {
+            var execIdObj = keyRecord.get("exec_id");
+            return execIdObj != null && execIdObj.toString().equals(execId);
+        }
+        return false;
+    }
+
+    private MessageDto createMessageDto(org.apache.kafka.clients.consumer.ConsumerRecord<Object, Object> record) {
+        String content = switch (record.value()) {
+            case GenericRecord genericRecord -> convertAvroToJson(genericRecord);
+            case null -> null;
+            case Object o -> o.toString();
+        };
+        return new MessageDto(
+                record.topic(),
+                content,
+                record.timestamp(),
+                record.partition(),
+                record.offset());
+    }
+
+    private boolean determineHasMore(boolean limitReached, List<TopicPartition> partitions,
+            Map<TopicPartition, OffsetAndTimestamp> endOffsets,
+            Map<String, Map<Integer, Long>> nextCursorOffsets, Map<String, Map<Integer, Long>> cursorOffsets,
+            Map<TopicPartition, OffsetAndTimestamp> startOffsets) {
+        if (!limitReached) {
+            return false;
+        }
+        for (var partition : partitions) {
+            var endOffsetRecord = endOffsets.get(partition);
+            if (endOffsetRecord == null) {
+                continue;
+            }
+            var endOffset = endOffsetRecord.offset();
+            Long currentPosition = null;
+            if (nextCursorOffsets.containsKey(partition.topic())
+                    && nextCursorOffsets.get(partition.topic()).containsKey(partition.partition())) {
+                currentPosition = nextCursorOffsets.get(partition.topic()).get(partition.partition());
+            }
+
+            if (currentPosition == null) {
+                if (cursorOffsets != null
+                        && cursorOffsets.containsKey(partition.topic())
+                        && cursorOffsets.get(partition.topic()).containsKey(partition.partition())) {
+                    currentPosition = cursorOffsets.get(partition.topic()).get(partition.partition());
+                } else if (startOffsets != null && startOffsets.get(partition) != null) {
+                    currentPosition = startOffsets.get(partition).offset();
+                }
+            }
+
+            if (currentPosition != null && currentPosition < endOffset) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String convertAvroToJson(GenericRecord record) {

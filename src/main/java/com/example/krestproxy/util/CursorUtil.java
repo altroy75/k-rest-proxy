@@ -14,7 +14,7 @@ public class CursorUtil {
     private static final Logger logger = LoggerFactory.getLogger(CursorUtil.class);
     private static final ObjectMapper objectMapper = new ObjectMapper();
 
-    public static String createCursor(Map<Integer, Long> offsets) {
+    public static String createCursor(Map<String, Map<Integer, Long>> offsets) {
         try {
             String json = objectMapper.writeValueAsString(offsets);
             return Base64.getEncoder().encodeToString(json.getBytes(StandardCharsets.UTF_8));
@@ -24,13 +24,13 @@ public class CursorUtil {
         }
     }
 
-    public static Map<Integer, Long> parseCursor(String cursor) {
+    public static Map<String, Map<Integer, Long>> parseCursor(String cursor) {
         if (cursor == null || cursor.isEmpty()) {
             return null;
         }
         try {
             String json = new String(Base64.getDecoder().decode(cursor), StandardCharsets.UTF_8);
-            return objectMapper.readValue(json, new TypeReference<Map<Integer, Long>>() {
+            return objectMapper.readValue(json, new TypeReference<Map<String, Map<Integer, Long>>>() {
             });
         } catch (Exception e) {
             logger.error("Error parsing cursor", e);

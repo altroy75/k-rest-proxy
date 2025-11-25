@@ -413,8 +413,10 @@ class KafkaMessageServiceTest {
                 TopicPartition partition0 = new TopicPartition(topic, 0);
 
                 // Create a cursor pointing to offset 5
-                Map<Integer, Long> cursorOffsets = new HashMap<>();
-                cursorOffsets.put(0, 5L);
+                Map<String, Map<Integer, Long>> cursorOffsets = new HashMap<>();
+                Map<Integer, Long> partitionOffsets = new HashMap<>();
+                partitionOffsets.put(0, 5L);
+                cursorOffsets.put(topic, partitionOffsets);
                 String cursor = CursorUtil.createCursor(cursorOffsets);
 
                 when(consumerPool.borrowObject()).thenReturn(consumer);
