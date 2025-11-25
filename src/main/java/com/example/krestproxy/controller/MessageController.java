@@ -1,7 +1,11 @@
 package com.example.krestproxy.controller;
 
 import com.example.krestproxy.dto.MessageDto;
+import com.example.krestproxy.dto.PaginatedResponse;
 import com.example.krestproxy.service.KafkaMessageService;
+import com.example.krestproxy.validation.RequestValidator;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
@@ -14,40 +18,49 @@ import java.util.List;
 @RequestMapping("/api/v1/messages")
 public class MessageController {
 
+    private static final Logger logger = LoggerFactory.getLogger(MessageController.class);
     private final KafkaMessageService kafkaMessageService;
+    private final RequestValidator requestValidator;
 
     @Autowired
-    public MessageController(KafkaMessageService kafkaMessageService) {
+    public MessageController(KafkaMessageService kafkaMessageService, RequestValidator requestValidator) {
         this.kafkaMessageService = kafkaMessageService;
+        this.requestValidator = requestValidator;
     }
 
     @GetMapping("/{topic}")
-    public ResponseEntity<List<MessageDto>> getMessages(
-            @PathVariable String topic,
-            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant startTime,
-            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant endTime) {
-
-        if (startTime.isAfter(endTime)) {
-            return ResponseEntity.badRequest().build();
-        }
-
-        var messages = kafkaMessageService.getMessages(topic, startTime, endTime);
-        return ResponseEntity.ok(messages);
-    }
-
-    @GetMapping("/{topic}/filter")
-    public ResponseEntity<List<MessageDto>> getMessagesWithExecId(
+    public ResponseEntity<PaginatedResponse<MessageDto>> getMessages(
             @PathVariable String topic,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant startTime,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant endTime,
-            @RequestParam String execId) {
+            @RequestParam(required = false) String cursor) {
 
-        if (startTime.isAfter(endTime)) {
-            return ResponseEntity.badRequest().build();
-        }
+        logger.info("GET /api/v1/messages/{} startTime={} endTime={} cursor={}", topic, startTime, endTime, cursor);
+        requestValidator.validateTopicName(topic);
+        requestValidator.validateTimeRange(startTime, endTime);
 
-        var messages = kafkaMessageService.getMessagesWithExecId(topic, startTime, endTime, execId);
-        return ResponseEntity.ok(messages);
+        var response = kafkaMessageService.getMessages(topic, startTime, endTime, cursor);
+        logger.info("Returning {} messages for topic: {}", response.data().size(), topic);
+        return ResponseEntity.ok(response);
+    }
+
+    @GetMapping("/{topic}/filter")
+    public ResponseEntity<PaginatedResponse<MessageDto>> getMessagesWithExecId(
+            @PathVariable String topic,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant startTime,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant endTime,
+            @RequestParam String execId,
+            @RequestParam(required = false) String cursor) {
+
+        logger.info("GET /api/v1/messages/{}/filter startTime={} endTime={} execId={} cursor={}",
+                topic, startTime, endTime, execId, cursor);
+        requestValidator.validateTopicName(topic);
+        requestValidator.validateTimeRange(startTime, endTime);
+        requestValidator.validateExecutionId(execId);
+
+        var response = kafkaMessageService.getMessagesWithExecId(topic, startTime, endTime, execId, cursor);
+        logger.info("Returning {} messages for topic: {} with execId: {}", response.data().size(), topic, execId);
+        return ResponseEntity.ok(response);
     }
 
     @GetMapping("/filter")
@@ -57,11 +70,16 @@ public class MessageController {
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant endTime,
             @RequestParam(required = false) String execId) {
 
-        if (startTime.isAfter(endTime)) {
-            return ResponseEntity.badRequest().build();
+        logger.info("GET /api/v1/messages/filter topics={} startTime={} endTime={} execId={}",
+                topics, startTime, endTime, execId);
+        topics.forEach(requestValidator::validateTopicName);
+        requestValidator.validateTimeRange(startTime, endTime);
+        if (execId != null) {
+            requestValidator.validateExecutionId(execId);
         }
 
         var messages = kafkaMessageService.getMessagesFromTopics(topics, startTime, endTime, execId);
+        logger.info("Returning {} messages for topics: {}", messages.size(), topics);
         return ResponseEntity.ok(messages);
     }
 
@@ -69,17 +87,13 @@ public class MessageController {
     public ResponseEntity<List<MessageDto>> getMessagesByExecution(
             @RequestParam List<String> topics,
             @RequestParam String execId) {
-        try {
-            var messages = kafkaMessageService.getMessagesForExecution(topics, execId);
-            return ResponseEntity.ok(messages);
-        } catch (RuntimeException e) {
-            // Simplistic error handling: if "Could not find start and/or end time" (or other runtime errors), return 404
-            // In a real app, we might want to distinguish 404 from 500.
-            // But the requirement said "fail". 404 is a failure indicating "Not Found".
-            if (e.getMessage() != null && e.getMessage().contains("Could not find")) {
-                return ResponseEntity.notFound().build();
-            }
-            throw e;
-        }
+
+        logger.info("GET /api/v1/messages/by-execution topics={} execId={}", topics, execId);
+        topics.forEach(requestValidator::validateTopicName);
+        requestValidator.validateExecutionId(execId);
+
+        var messages = kafkaMessageService.getMessagesForExecution(topics, execId);
+        logger.info("Returning {} messages for execution: {}", messages.size(), execId);
+        return ResponseEntity.ok(messages);
     }
 }
