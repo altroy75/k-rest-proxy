@@ -15,6 +15,9 @@ public class CursorUtil {
     private static final ObjectMapper objectMapper = new ObjectMapper();
 
     public static String createCursor(Map<String, Map<Integer, Long>> offsets) {
+        if (offsets == null) {
+            return null;
+        }
         try {
             String json = objectMapper.writeValueAsString(offsets);
             return Base64.getEncoder().encodeToString(json.getBytes(StandardCharsets.UTF_8));

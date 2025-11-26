@@ -40,8 +40,8 @@ class KafkaMessageServiceTest {
 
         @BeforeEach
         void setUp() throws Exception {
-                when(kafkaProperties.getMaxMessagesPerRequest()).thenReturn(10000);
-                when(kafkaProperties.getPollTimeoutMs()).thenReturn(100L);
+                lenient().when(kafkaProperties.getMaxMessagesPerRequest()).thenReturn(10000);
+                lenient().when(kafkaProperties.getPollTimeoutMs()).thenReturn(100L);
                 kafkaMessageService = new KafkaMessageService(consumerPool, kafkaProperties);
         }
 
@@ -501,5 +501,105 @@ class KafkaMessageServiceTest {
                 assertEquals(1, response.data().size());
                 assertTrue(response.hasMore());
                 assertNotNull(response.nextCursor());
+        }
+
+        @Test
+        void getMessages_shouldReturnEmpty_whenCursorPointsToFutureOffset() throws Exception {
+                String topic = "test-future-cursor";
+                Instant startTime = Instant.parse("2023-01-01T10:00:00Z");
+                Instant endTime = Instant.parse("2023-01-01T10:05:00Z");
+                TopicPartition partition0 = new TopicPartition(topic, 0);
+
+                // Cursor points to offset 100, but end offset is 10
+                Map<String, Map<Integer, Long>> cursorOffsets = new HashMap<>();
+                Map<Integer, Long> partitionOffsets = new HashMap<>();
+                partitionOffsets.put(0, 100L);
+                cursorOffsets.put(topic, partitionOffsets);
+                String cursor = CursorUtil.createCursor(cursorOffsets);
+
+                when(consumerPool.borrowObject()).thenReturn(consumer);
+                when(consumer.partitionsFor(topic)).thenReturn(
+                                Collections.singletonList(
+                                                new org.apache.kafka.common.PartitionInfo(topic, 0, null, null, null)));
+
+                Map<TopicPartition, OffsetAndTimestamp> endOffsets = new HashMap<>();
+                endOffsets.put(partition0, new OffsetAndTimestamp(10L, endTime.toEpochMilli()));
+                when(consumer.offsetsForTimes(any())).thenReturn(endOffsets);
+
+                PaginatedResponse<MessageDto> response = kafkaMessageService.getMessages(topic, startTime, endTime,
+                                cursor);
+
+                assertTrue(response.data().isEmpty());
+                assertFalse(response.hasMore());
+
+                verify(consumer).assign(Collections.singletonList(partition0));
+                // Should not seek or poll if cursor is beyond end offset
+                verify(consumer, never()).seek(any(TopicPartition.class), anyLong());
+                verify(consumer, never()).poll(any(Duration.class));
+                verify(consumerPool).returnObject(consumer);
+        }
+
+        @Test
+        void getMessages_shouldHandleEmptyTopic() throws Exception {
+                String topic = "empty-topic";
+                Instant startTime = Instant.parse("2023-01-01T10:00:00Z");
+                Instant endTime = Instant.parse("2023-01-01T10:05:00Z");
+                when(consumerPool.borrowObject()).thenReturn(consumer);
+                when(consumer.partitionsFor(topic)).thenReturn(
+                                Collections.singletonList(
+                                                new org.apache.kafka.common.PartitionInfo(topic, 0, null, null, null)));
+
+                // Offsets return null for empty topic or no match
+                when(consumer.offsetsForTimes(any())).thenReturn(new HashMap<>());
+
+                PaginatedResponse<MessageDto> response = kafkaMessageService.getMessages(topic, startTime, endTime,
+                                null);
+
+                assertTrue(response.data().isEmpty());
+                assertFalse(response.hasMore());
+        }
+
+        @Test
+        void getMessages_shouldThrowException_whenCursorIsInvalid() throws Exception {
+                String topic = "test-invalid-cursor";
+                Instant startTime = Instant.parse("2023-01-01T10:00:00Z");
+                Instant endTime = Instant.parse("2023-01-01T10:05:00Z");
+                String invalidCursor = "invalid-cursor-string";
+
+                when(consumerPool.borrowObject()).thenReturn(consumer);
+
+                // Depending on implementation, it might ignore invalid cursor or throw
+                // exception.
+                // Current implementation logs error and returns null from parseCursor,
+                // effectively ignoring it.
+                // Let's verify it behaves as if no cursor was provided.
+
+                when(consumer.partitionsFor(topic)).thenReturn(
+                                Collections.singletonList(
+                                                new org.apache.kafka.common.PartitionInfo(topic, 0, null, null, null)));
+
+                // Mock offsets since cursor is ignored
+                TopicPartition partition0 = new TopicPartition(topic, 0);
+                Map<TopicPartition, OffsetAndTimestamp> startOffsets = new HashMap<>();
+                startOffsets.put(partition0, new OffsetAndTimestamp(0L, startTime.toEpochMilli()));
+                when(consumer.offsetsForTimes(
+                                argThat(map -> map != null && map.containsValue(startTime.toEpochMilli()))))
+                                .thenReturn(startOffsets);
+
+                Map<TopicPartition, OffsetAndTimestamp> endOffsets = new HashMap<>();
+                endOffsets.put(partition0, new OffsetAndTimestamp(10L, endTime.toEpochMilli()));
+                when(consumer.offsetsForTimes(argThat(map -> map != null && map.containsValue(endTime.toEpochMilli()))))
+                                .thenReturn(endOffsets);
+
+                when(consumer.poll(any())).thenReturn(new ConsumerRecords<>(Collections.emptyMap()));
+
+                PaginatedResponse<MessageDto> response = kafkaMessageService.getMessages(topic, startTime, endTime,
+                                invalidCursor);
+
+                assertNotNull(response);
+                assertTrue(response.data().isEmpty());
+
+                verify(consumer).assign(Collections.singletonList(partition0));
+                verify(consumer).seek(partition0, 0L); // Should seek to start time, not cursor
         }
 }

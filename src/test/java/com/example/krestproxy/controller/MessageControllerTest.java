@@ -86,4 +86,18 @@ class MessageControllerTest {
                                 .andExpect(content().json(
                                                 "{\"data\":[{\"topicName\":\"test-topic\",\"content\":\"msg1\",\"timestamp\":1000,\"partition\":0,\"offset\":0}],\"nextCursor\":null,\"hasMore\":false}"));
         }
+
+        @Test
+        void getMessages_shouldReturnOk_whenCursorIsInvalid() throws Exception {
+                when(kafkaMessageService.getMessages(eq("test-topic"), any(Instant.class), any(Instant.class),
+                                eq("invalid-cursor")))
+                                .thenReturn(new PaginatedResponse<>(Collections.emptyList(), null, false));
+
+                mockMvc.perform(get("/api/v1/messages/test-topic")
+                                .header("X-API-KEY", "secret-api-key")
+                                .param("startTime", "2023-01-01T10:00:00Z")
+                                .param("endTime", "2023-01-01T10:05:00Z")
+                                .param("cursor", "invalid-cursor"))
+                                .andExpect(status().isOk());
+        }
 }
