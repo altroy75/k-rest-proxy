@@ -1,0 +1,459 @@
+openapi: 3.0.3
+info:
+  title: Kafka REST Proxy API
+  description: |
+    REST API for fetching Kafka messages with time-based and execution-based filtering.
+    Supports cursor-based pagination for single-topic queries.
+    
+    ## Authentication
+    All endpoints require API Key authentication via the `X-API-Key` header.
+    
+    ## Features
+    - Fetch messages from single or multiple Kafka topics
+    - Time-based filtering with ISO 8601 timestamps
+    - Execution ID filtering for workflow-related messages
+    - Cursor-based pagination for single-topic queries
+    - HTTPS-only with TLS support
+  version: 1.0.0
+  contact:
+    name: API Support
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0.html
+
+servers:
+  - url: https://localhost:8443/api/v1
+    description: Local development server
+
+security:
+  - ApiKeyAuth: []
+
+tags:
+  - name: Messages
+    description: Operations for fetching Kafka messages
+
+paths:
+  /messages/{topic}:
+    get:
+      tags:
+        - Messages
+      summary: Get messages from a single topic
+      description: |
+        Retrieves messages from a specific Kafka topic within a time range.
+        Supports cursor-based pagination for efficient iteration through large result sets.
+      operationId: getMessages
+      parameters:
+        - name: topic
+          in: path
+          required: true
+          description: Name of the Kafka topic
+          schema:
+            type: string
+            pattern: '^[a-zA-Z0-9._-]+$'
+          example: order-events
+        - name: startTime
+          in: query
+          required: true
+          description: Start of the time range (ISO 8601 format)
+          schema:
+            type: string
+            format: date-time
+          example: '2024-11-26T00:00:00Z'
+        - name: endTime
+          in: query
+          required: true
+          description: End of the time range (ISO 8601 format)
+          schema:
+            type: string
+            format: date-time
+          example: '2024-11-26T23:59:59Z'
+        - name: cursor
+          in: query
+          required: false
+          description: |
+            Pagination cursor for fetching the next page of results.
+            Obtained from the `nextCursor` field in the previous response.
+          schema:
+            type: string
+          example: b3JkZXItZXZlbnRzOjA6MTAwMA==
+      responses:
+        '200':
+          description: Successful response with paginated messages
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedMessageResponse'
+              examples:
+                withMessages:
+                  summary: Response with messages and pagination
+                  value:
+                    data:
+                      - topicName: order-events
+                        content: '{"orderId": "12345", "status": "completed"}'
+                        timestamp: 1732579200000
+                        partition: 0
+                        offset: 1000
+                      - topicName: order-events
+                        content: '{"orderId": "12346", "status": "pending"}'
+                        timestamp: 1732579260000
+                        partition: 0
+                        offset: 1001
+                    nextCursor: b3JkZXItZXZlbnRzOjA6MTAwMg==
+                    hasMore: true
+                noMoreMessages:
+                  summary: Last page of results
+                  value:
+                    data:
+                      - topicName: order-events
+                        content: '{"orderId": "12350", "status": "shipped"}'
+                        timestamp: 1732580000000
+                        partition: 0
+                        offset: 2000
+                    nextCursor: null
+                    hasMore: false
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /messages/{topic}/filter:
+    get:
+      tags:
+        - Messages
+      summary: Get filtered messages from a single topic by execution ID
+      description: |
+        Retrieves messages from a specific Kafka topic filtered by time range and execution ID.
+        Supports cursor-based pagination.
+      operationId: getMessagesWithExecId
+      parameters:
+        - name: topic
+          in: path
+          required: true
+          description: Name of the Kafka topic
+          schema:
+            type: string
+            pattern: '^[a-zA-Z0-9._-]+$'
+          example: workflow-events
+        - name: startTime
+          in: query
+          required: true
+          description: Start of the time range (ISO 8601 format)
+          schema:
+            type: string
+            format: date-time
+          example: '2024-11-26T00:00:00Z'
+        - name: endTime
+          in: query
+          required: true
+          description: End of the time range (ISO 8601 format)
+          schema:
+            type: string
+            format: date-time
+          example: '2024-11-26T23:59:59Z'
+        - name: execId
+          in: query
+          required: true
+          description: Execution ID to filter messages
+          schema:
+            type: string
+            pattern: '^[a-zA-Z0-9_-]+$'
+          example: exec-2024-001
+        - name: cursor
+          in: query
+          required: false
+          description: Pagination cursor for fetching the next page of results
+          schema:
+            type: string
+          example: d29ya2Zsb3ctZXZlbnRzOjE6NTAw
+      responses:
+        '200':
+          description: Successful response with filtered paginated messages
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedMessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /messages/filter:
+    get:
+      tags:
+        - Messages
+      summary: Get messages from multiple topics
+      description: |
+        Retrieves messages from multiple Kafka topics within a time range.
+        Optionally filter by execution ID. Returns a simple list (no pagination).
+      operationId: getMessagesFromTopics
+      parameters:
+        - name: topics
+          in: query
+          required: true
+          description: List of Kafka topic names
+          schema:
+            type: array
+            items:
+              type: string
+              pattern: '^[a-zA-Z0-9._-]+$'
+            minItems: 1
+          style: form
+          explode: true
+          example: ['order-events', 'payment-events']
+        - name: startTime
+          in: query
+          required: true
+          description: Start of the time range (ISO 8601 format)
+          schema:
+            type: string
+            format: date-time
+          example: '2024-11-26T00:00:00Z'
+        - name: endTime
+          in: query
+          required: true
+          description: End of the time range (ISO 8601 format)
+          schema:
+            type: string
+            format: date-time
+          example: '2024-11-26T23:59:59Z'
+        - name: execId
+          in: query
+          required: false
+          description: Optional execution ID to filter messages
+          schema:
+            type: string
+            pattern: '^[a-zA-Z0-9_-]+$'
+          example: exec-2024-001
+      responses:
+        '200':
+          description: Successful response with messages from all topics
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MessageDto'
+              example:
+                - topicName: order-events
+                  content: '{"orderId": "12345", "status": "completed"}'
+                  timestamp: 1732579200000
+                  partition: 0
+                  offset: 1000
+                - topicName: payment-events
+                  content: '{"paymentId": "pay-001", "amount": 99.99}'
+                  timestamp: 1732579210000
+                  partition: 1
+                  offset: 500
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /messages/by-execution:
+    get:
+      tags:
+        - Messages
+      summary: Get messages for a specific execution
+      description: |
+        Retrieves all messages from multiple topics that belong to a specific execution.
+        Time range is automatically determined from the execution's start and end times.
+      operationId: getMessagesByExecution
+      parameters:
+        - name: topics
+          in: query
+          required: true
+          description: List of Kafka topic names
+          schema:
+            type: array
+            items:
+              type: string
+              pattern: '^[a-zA-Z0-9._-]+$'
+            minItems: 1
+          style: form
+          explode: true
+          example: ['workflow-events', 'audit-events']
+        - name: execId
+          in: query
+          required: true
+          description: Execution ID to fetch messages for
+          schema:
+            type: string
+            pattern: '^[a-zA-Z0-9_-]+$'
+          example: exec-2024-001
+      responses:
+        '200':
+          description: Successful response with execution messages
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MessageDto'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key for authentication
+
+  schemas:
+    MessageDto:
+      type: object
+      required:
+        - topicName
+        - content
+        - timestamp
+        - partition
+        - offset
+      properties:
+        topicName:
+          type: string
+          description: The Kafka topic name
+          example: order-events
+        content:
+          type: string
+          description: Message content (Avro deserialized to JSON string)
+          example: '{"orderId": "12345", "status": "completed"}'
+        timestamp:
+          type: integer
+          format: int64
+          description: Message timestamp in epoch milliseconds
+          example: 1732579200000
+        partition:
+          type: integer
+          format: int32
+          description: Kafka partition number
+          example: 0
+          minimum: 0
+        offset:
+          type: integer
+          format: int64
+          description: Kafka offset
+          example: 1000
+          minimum: 0
+
+    PaginatedMessageResponse:
+      type: object
+      required:
+        - data
+        - hasMore
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/MessageDto'
+          description: List of messages in the current page
+        nextCursor:
+          type: string
+          nullable: true
+          description: |
+            Cursor for fetching the next page of results.
+            Null if there are no more pages.
+          example: b3JkZXItZXZlbnRzOjA6MTAwMA==
+        hasMore:
+          type: boolean
+          description: Whether there are more messages to fetch
+          example: true
+
+    ErrorResponse:
+      type: object
+      required:
+        - timestamp
+        - status
+        - error
+        - path
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: Timestamp when the error occurred
+          example: '2024-11-26T14:52:47Z'
+        status:
+          type: integer
+          description: HTTP status code
+          example: 400
+        error:
+          type: string
+          description: Error type
+          example: Bad Request
+        message:
+          type: string
+          description: Detailed error message
+          example: Invalid time range
+        path:
+          type: string
+          description: API path where the error occurred
+          example: /api/v1/messages/order-events
+
+  responses:
+    BadRequest:
+      description: Invalid request parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            invalidTimeRange:
+              summary: Invalid time range
+              value:
+                timestamp: '2024-11-26T14:52:47Z'
+                status: 400
+                error: Bad Request
+                message: 'Start time must be before end time'
+                path: /api/v1/messages/order-events
+            invalidTopicName:
+              summary: Invalid topic name
+              value:
+                timestamp: '2024-11-26T14:52:47Z'
+                status: 400
+                error: Bad Request
+                message: 'Topic name contains invalid characters'
+                path: /api/v1/messages/invalid@topic
+            invalidCursor:
+              summary: Invalid cursor
+              value:
+                timestamp: '2024-11-26T14:52:47Z'
+                status: 400
+                error: Bad Request
+                message: 'Invalid cursor format'
+                path: /api/v1/messages/order-events
+
+    Unauthorized:
+      description: Missing or invalid API key
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            timestamp: '2024-11-26T14:52:47Z'
+            status: 401
+            error: Unauthorized
+            message: 'Invalid or missing API key'
+            path: /api/v1/messages/order-events
+
+    InternalServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            timestamp: '2024-11-26T14:52:47Z'
+            status: 500
+            error: Internal Server Error
+            message: 'An unexpected error occurred'
+            path: /api/v1/messages/order-events
