@@ -324,6 +324,14 @@ java -Xms512m -Xmx2g -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -jar app.jar
    export APP_SECURITY_API_KEY="$(openssl rand -hex 32)"
    ```
 
+   **Local Development:**
+   1. Copy `.env.example` to `.env`:
+      ```bash
+      cp .env.example .env
+      ```
+   2. Edit `.env` and set your `API_KEY`.
+   3. `docker-compose` will automatically pick up the `API_KEY` variable.
+
 ### TLS/SSL Configuration
 
 Generate production certificates (don't use self-signed in prod):

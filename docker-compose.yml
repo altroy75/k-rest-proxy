@@ -55,3 +55,4 @@ services:
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       SPRING_KAFKA_PROPERTIES_SCHEMA_REGISTRY_URL: http://schema-registry:8081
       SERVER_SSL_KEY_STORE: file:/app/keystore.p12
+      APP_SECURITY_API_KEY: ${API_KEY}
