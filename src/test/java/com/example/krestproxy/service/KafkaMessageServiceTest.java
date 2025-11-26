@@ -602,4 +602,368 @@ class KafkaMessageServiceTest {
                 verify(consumer).assign(Collections.singletonList(partition0));
                 verify(consumer).seek(partition0, 0L); // Should seek to start time, not cursor
         }
+
+        // Multi-partition cursor pagination tests
+
+        @Test
+        void getMessages_shouldHandleMultiplePartitions_whenCursorIsProvided() throws Exception {
+                String topic = "test-multi-partition";
+                Instant startTime = Instant.parse("2023-01-01T10:00:00Z");
+                Instant endTime = Instant.parse("2023-01-01T10:05:00Z");
+                TopicPartition partition0 = new TopicPartition(topic, 0);
+                TopicPartition partition1 = new TopicPartition(topic, 1);
+
+                // Create a cursor that has progressed differently on each partition
+                Map<String, Map<Integer, Long>> cursorOffsets = new HashMap<>();
+                Map<Integer, Long> partitionOffsets = new HashMap<>();
+                partitionOffsets.put(0, 5L); // Partition 0 started at offset 5
+                partitionOffsets.put(1, 10L); // Partition 1 started at offset 10
+                cursorOffsets.put(topic, partitionOffsets);
+                String cursor = CursorUtil.createCursor(cursorOffsets);
+
+                when(consumerPool.borrowObject()).thenReturn(consumer);
+                when(consumer.partitionsFor(topic)).thenReturn(
+                                Arrays.asList(
+                                                new org.apache.kafka.common.PartitionInfo(topic, 0, null, null, null),
+                                                new org.apache.kafka.common.PartitionInfo(topic, 1, null, null, null)));
+
+                // Mock end offsets
+                Map<TopicPartition, OffsetAndTimestamp> endOffsets = new HashMap<>();
+                endOffsets.put(partition0, new OffsetAndTimestamp(20L, endTime.toEpochMilli()));
+                endOffsets.put(partition1, new OffsetAndTimestamp(25L, endTime.toEpochMilli()));
+                when(consumer.offsetsForTimes(any())).thenReturn(endOffsets);
+
+                // Mock poll with empty results
+                when(consumer.poll(any())).thenReturn(new ConsumerRecords<>(Collections.emptyMap()));
+
+                PaginatedResponse<MessageDto> response = kafkaMessageService.getMessages(topic, startTime,
+                                endTime, cursor);
+
+                // Verify seek was called with cursor offsets, not time-based offsets
+                verify(consumer).seek(partition0, 5L);
+                verify(consumer).seek(partition1, 10L);
+                assertNotNull(response);
+                verify(consumerPool).returnObject(consumer);
+        }
+
+        @Test
+        void getMessages_shouldContinueFromCorrectPartitions_whenCursorHasPartialProgress() throws Exception {
+                String topic = "test-partial-cursor";
+                Instant startTime = Instant.parse("2023-01-01T10:00:00Z");
+                Instant endTime = Instant.parse("2023-01-01T10:05:00Z");
+                TopicPartition partition0 = new TopicPartition(topic, 0);
+                TopicPartition partition1 = new TopicPartition(topic, 1);
+
+                // Cursor only has progress for partition 0, partition 1 should use time-based
+                // offset
+                Map<String, Map<Integer, Long>> cursorOffsets = new HashMap<>();
+                Map<Integer, Long> partitionOffsets = new HashMap<>();
+                partitionOffsets.put(0, 15L); // Only partition 0 in cursor
+                cursorOffsets.put(topic, partitionOffsets);
+                String cursor = CursorUtil.createCursor(cursorOffsets);
+
+                when(consumerPool.borrowObject()).thenReturn(consumer);
+                when(consumer.partitionsFor(topic)).thenReturn(
+                                Arrays.asList(
+                                                new org.apache.kafka.common.PartitionInfo(topic, 0, null, null, null),
+                                                new org.apache.kafka.common.PartitionInfo(topic, 1, null, null, null)));
+
+                // Mock start offsets for partition 1 only
+                Map<TopicPartition, OffsetAndTimestamp> startOffsets = new HashMap<>();
+                startOffsets.put(partition1, new OffsetAndTimestamp(0L, startTime.toEpochMilli()));
+                when(consumer.offsetsForTimes(
+                                argThat(map -> map != null && map.containsKey(partition1)
+                                                && !map.containsKey(partition0))))
+                                .thenReturn(startOffsets);
+
+                Map<TopicPartition, OffsetAndTimestamp> endOffsets = new HashMap<>();
+                endOffsets.put(partition0, new OffsetAndTimestamp(20L, endTime.toEpochMilli()));
+                endOffsets.put(partition1, new OffsetAndTimestamp(10L, endTime.toEpochMilli()));
+                when(consumer.offsetsForTimes(
+                                argThat(map -> map != null && map.containsKey(partition0) && map.containsKey(partition1)
+                                                && map.get(partition0) == endTime.toEpochMilli())))
+                                .thenReturn(endOffsets);
+
+                when(consumer.poll(any())).thenReturn(new ConsumerRecords<>(Collections.emptyMap()));
+
+                PaginatedResponse<MessageDto> response = kafkaMessageService.getMessages(topic, startTime,
+                                endTime, cursor);
+
+                // Partition 0 should use cursor offset, partition 1 should use time-based
+                // offset
+                verify(consumer).seek(partition0, 15L);
+                verify(consumer).seek(partition1, 0L);
+                assertNotNull(response);
+                verify(consumerPool).returnObject(consumer);
+        }
+
+        // Consumer pool error handling tests
+
+        @Test
+        void getMessages_shouldThrowException_whenConsumerBorrowFails() throws Exception {
+                String topic = "test-topic";
+                Instant startTime = Instant.parse("2023-01-01T10:00:00Z");
+                Instant endTime = Instant.parse("2023-01-01T10:05:00Z");
+
+                when(consumerPool.borrowObject()).thenThrow(new RuntimeException("Pool exhausted"));
+
+                Exception exception = assertThrows(com.example.krestproxy.exception.KafkaOperationException.class,
+                                () -> kafkaMessageService.getMessages(topic, startTime, endTime, null));
+
+                assertTrue(exception.getMessage().contains("Error fetching messages from Kafka"));
+                assertTrue(exception.getCause().getMessage().contains("Pool exhausted"));
+
+                // Verify consumer was not returned (since it was never borrowed)
+                verify(consumerPool, never()).returnObject(any());
+        }
+
+        @Test
+        void getMessages_shouldReturnConsumer_whenExceptionOccursDuringFetch() throws Exception {
+                String topic = "test-exception";
+                Instant startTime = Instant.parse("2023-01-01T10:00:00Z");
+                Instant endTime = Instant.parse("2023-01-01T10:05:00Z");
+
+                when(consumerPool.borrowObject()).thenReturn(consumer);
+                when(consumer.partitionsFor(topic)).thenThrow(new RuntimeException("Kafka error"));
+
+                assertThrows(com.example.krestproxy.exception.KafkaOperationException.class,
+                                () -> kafkaMessageService.getMessages(topic, startTime, endTime, null));
+
+                // Verify consumer was returned to pool even though exception occurred
+                verify(consumerPool).returnObject(consumer);
+        }
+
+        // Null and empty value handling tests
+
+        @Test
+        void getMessages_shouldHandleNullValues() throws Exception {
+                String topic = "test-null-values";
+                Instant startTime = Instant.parse("2023-01-01T10:00:00Z");
+                Instant endTime = Instant.parse("2023-01-01T10:05:00Z");
+                TopicPartition partition0 = new TopicPartition(topic, 0);
+
+                when(consumerPool.borrowObject()).thenReturn(consumer);
+                when(consumer.partitionsFor(topic)).thenReturn(
+                                Collections.singletonList(
+                                                new org.apache.kafka.common.PartitionInfo(topic, 0, null, null, null)));
+
+                Map<TopicPartition, OffsetAndTimestamp> startOffsets = new HashMap<>();
+                startOffsets.put(partition0, new OffsetAndTimestamp(0L, startTime.toEpochMilli()));
+                when(consumer.offsetsForTimes(any())).thenReturn(startOffsets);
+
+                Map<TopicPartition, OffsetAndTimestamp> endOffsets = new HashMap<>();
+                endOffsets.put(partition0, new OffsetAndTimestamp(10L, endTime.toEpochMilli()));
+                when(consumer.offsetsForTimes(
+                                argThat(map -> map != null && map.get(partition0) == endTime.toEpochMilli())))
+                                .thenReturn(endOffsets);
+
+                // Create records with null values
+                ConsumerRecord<Object, Object> recordWithNullValue = new ConsumerRecord<>(topic, 0, 0L,
+                                startTime.toEpochMilli(),
+                                org.apache.kafka.common.record.TimestampType.CREATE_TIME, 0, 0, "key", null,
+                                new org.apache.kafka.common.header.internals.RecordHeaders(), Optional.empty());
+
+                Map<TopicPartition, List<ConsumerRecord<Object, Object>>> recordsMap = new HashMap<>();
+                recordsMap.put(partition0, Collections.singletonList(recordWithNullValue));
+                ConsumerRecords<Object, Object> records = new ConsumerRecords<>(recordsMap);
+
+                when(consumer.poll(any())).thenReturn(records)
+                                .thenReturn(new ConsumerRecords<>(Collections.emptyMap()));
+
+                PaginatedResponse<MessageDto> response = kafkaMessageService.getMessages(topic, startTime,
+                                endTime, null);
+
+                assertEquals(1, response.data().size());
+                assertNull(response.data().get(0).content());
+                verify(consumerPool).returnObject(consumer);
+        }
+
+        // Execution time caching tests
+
+        @Test
+        void findExecutionTimes_shouldThrowException_whenOnlyStartFound() throws Exception {
+                String execId = "exec-incomplete-start";
+                String execTopic = "execids";
+
+                when(consumerPool.borrowObject()).thenReturn(consumer);
+
+                TopicPartition execPartition = new TopicPartition(execTopic, 0);
+
+                // Only start record, no end record
+                ConsumerRecord<Object, Object> startRecord = new ConsumerRecord<>(execTopic, 0, 0, 1000,
+                                org.apache.kafka.common.record.TimestampType.CREATE_TIME,
+                                0, 0, execId, "start", new org.apache.kafka.common.header.internals.RecordHeaders(),
+                                Optional.empty());
+
+                Map<TopicPartition, List<ConsumerRecord<Object, Object>>> recordsMap = new HashMap<>();
+                recordsMap.put(execPartition, Collections.singletonList(startRecord));
+                ConsumerRecords<Object, Object> execRecords = new ConsumerRecords<>(recordsMap);
+
+                when(consumer.poll(any(Duration.class)))
+                                .thenReturn(execRecords)
+                                .thenReturn(new ConsumerRecords<>(Collections.emptyMap()));
+
+                assertThrows(com.example.krestproxy.exception.ExecutionNotFoundException.class,
+                                () -> kafkaMessageService.findExecutionTimes(execId));
+
+                verify(consumerPool).returnObject(consumer);
+        }
+
+        @Test
+        void findExecutionTimes_shouldThrowException_whenOnlyEndFound() throws Exception {
+                String execId = "exec-incomplete-end";
+                String execTopic = "execids";
+
+                when(consumerPool.borrowObject()).thenReturn(consumer);
+
+                TopicPartition execPartition = new TopicPartition(execTopic, 0);
+
+                // Only end record, no start record
+                ConsumerRecord<Object, Object> endRecord = new ConsumerRecord<>(execTopic, 0, 1, 2000,
+                                org.apache.kafka.common.record.TimestampType.CREATE_TIME,
+                                0, 0, execId, "end", new org.apache.kafka.common.header.internals.RecordHeaders(),
+                                Optional.empty());
+
+                Map<TopicPartition, List<ConsumerRecord<Object, Object>>> recordsMap = new HashMap<>();
+                recordsMap.put(execPartition, Collections.singletonList(endRecord));
+                ConsumerRecords<Object, Object> execRecords = new ConsumerRecords<>(recordsMap);
+
+                when(consumer.poll(any(Duration.class)))
+                                .thenReturn(execRecords)
+                                .thenReturn(new ConsumerRecords<>(Collections.emptyMap()));
+
+                assertThrows(com.example.krestproxy.exception.ExecutionNotFoundException.class,
+                                () -> kafkaMessageService.findExecutionTimes(execId));
+
+                verify(consumerPool).returnObject(consumer);
+        }
+
+        // Time boundary condition tests
+
+        @Test
+        void getMessages_shouldIncludeMessagesAtExactStartTime() throws Exception {
+                String topic = "test-start-boundary";
+                Instant startTime = Instant.parse("2023-01-01T10:00:00Z");
+                Instant endTime = Instant.parse("2023-01-01T10:05:00Z");
+                TopicPartition partition0 = new TopicPartition(topic, 0);
+
+                when(consumerPool.borrowObject()).thenReturn(consumer);
+                when(consumer.partitionsFor(topic)).thenReturn(
+                                Collections.singletonList(
+                                                new org.apache.kafka.common.PartitionInfo(topic, 0, null, null, null)));
+
+                Map<TopicPartition, OffsetAndTimestamp> startOffsets = new HashMap<>();
+                startOffsets.put(partition0, new OffsetAndTimestamp(0L, startTime.toEpochMilli()));
+                when(consumer.offsetsForTimes(any())).thenReturn(startOffsets);
+
+                Map<TopicPartition, OffsetAndTimestamp> endOffsets = new HashMap<>();
+                endOffsets.put(partition0, new OffsetAndTimestamp(10L, endTime.toEpochMilli()));
+                when(consumer.offsetsForTimes(
+                                argThat(map -> map != null && map.get(partition0) == endTime.toEpochMilli())))
+                                .thenReturn(endOffsets);
+
+                // Record at exact start time
+                ConsumerRecord<Object, Object> recordAtStartTime = new ConsumerRecord<>(topic, 0, 0L,
+                                startTime.toEpochMilli(),
+                                org.apache.kafka.common.record.TimestampType.CREATE_TIME, 0, 0, "key",
+                                "at-start",
+                                new org.apache.kafka.common.header.internals.RecordHeaders(), Optional.empty());
+
+                Map<TopicPartition, List<ConsumerRecord<Object, Object>>> recordsMap = new HashMap<>();
+                recordsMap.put(partition0, Collections.singletonList(recordAtStartTime));
+                ConsumerRecords<Object, Object> records = new ConsumerRecords<>(recordsMap);
+
+                when(consumer.poll(any())).thenReturn(records)
+                                .thenReturn(new ConsumerRecords<>(Collections.emptyMap()));
+
+                PaginatedResponse<MessageDto> response = kafkaMessageService.getMessages(topic, startTime,
+                                endTime, null);
+
+                assertEquals(1, response.data().size());
+                assertEquals("at-start", response.data().get(0).content());
+                verify(consumerPool).returnObject(consumer);
+        }
+
+        @Test
+        void getMessages_shouldIncludeMessagesAtExactEndTime() throws Exception {
+                String topic = "test-end-boundary";
+                Instant startTime = Instant.parse("2023-01-01T10:00:00Z");
+                Instant endTime = Instant.parse("2023-01-01T10:05:00Z");
+                TopicPartition partition0 = new TopicPartition(topic, 0);
+
+                when(consumerPool.borrowObject()).thenReturn(consumer);
+                when(consumer.partitionsFor(topic)).thenReturn(
+                                Collections.singletonList(
+                                                new org.apache.kafka.common.PartitionInfo(topic, 0, null, null, null)));
+
+                Map<TopicPartition, OffsetAndTimestamp> startOffsets = new HashMap<>();
+                startOffsets.put(partition0, new OffsetAndTimestamp(0L, startTime.toEpochMilli()));
+                when(consumer.offsetsForTimes(any())).thenReturn(startOffsets);
+
+                Map<TopicPartition, OffsetAndTimestamp> endOffsets = new HashMap<>();
+                endOffsets.put(partition0, new OffsetAndTimestamp(10L, endTime.toEpochMilli()));
+                when(consumer.offsetsForTimes(
+                                argThat(map -> map != null && map.get(partition0) == endTime.toEpochMilli())))
+                                .thenReturn(endOffsets);
+
+                // Record at exact end time
+                ConsumerRecord<Object, Object> recordAtEndTime = new ConsumerRecord<>(topic, 0, 9L,
+                                endTime.toEpochMilli(),
+                                org.apache.kafka.common.record.TimestampType.CREATE_TIME, 0, 0, "key", "at-end",
+                                new org.apache.kafka.common.header.internals.RecordHeaders(), Optional.empty());
+
+                Map<TopicPartition, List<ConsumerRecord<Object, Object>>> recordsMap = new HashMap<>();
+                recordsMap.put(partition0, Collections.singletonList(recordAtEndTime));
+                ConsumerRecords<Object, Object> records = new ConsumerRecords<>(recordsMap);
+
+                when(consumer.poll(any())).thenReturn(records)
+                                .thenReturn(new ConsumerRecords<>(Collections.emptyMap()));
+
+                PaginatedResponse<MessageDto> response = kafkaMessageService.getMessages(topic, startTime,
+                                endTime, null);
+
+                // Should be included since timestamp <= endTime
+                assertEquals(1, response.data().size());
+                assertEquals("at-end", response.data().get(0).content());
+                verify(consumerPool).returnObject(consumer);
+        }
+
+        // Partition edge case tests
+
+        @Test
+        void getMessages_shouldHandleTopicWithNoPartitions() throws Exception {
+                String topic = "topic-no-partitions";
+                Instant startTime = Instant.parse("2023-01-01T10:00:00Z");
+                Instant endTime = Instant.parse("2023-01-01T10:05:00Z");
+
+                when(consumerPool.borrowObject()).thenReturn(consumer);
+                when(consumer.partitionsFor(topic)).thenReturn(Collections.emptyList());
+
+                PaginatedResponse<MessageDto> response = kafkaMessageService.getMessages(topic, startTime,
+                                endTime, null);
+
+                assertTrue(response.data().isEmpty());
+                assertFalse(response.hasMore());
+
+                // Consumer should still be returned to pool
+                verify(consumerPool).returnObject(consumer);
+        }
+
+        @Test
+        void getMessages_shouldHandleNullPartitionInfo() throws Exception {
+                String topic = "topic-null-partitions";
+                Instant startTime = Instant.parse("2023-01-01T10:00:00Z");
+                Instant endTime = Instant.parse("2023-01-01T10:05:00Z");
+
+                when(consumerPool.borrowObject()).thenReturn(consumer);
+                when(consumer.partitionsFor(topic)).thenReturn(null);
+
+                PaginatedResponse<MessageDto> response = kafkaMessageService.getMessages(topic, startTime,
+                                endTime, null);
+
+                assertTrue(response.data().isEmpty());
+                assertFalse(response.hasMore());
+
+                verify(consumerPool).returnObject(consumer);
+        }
 }

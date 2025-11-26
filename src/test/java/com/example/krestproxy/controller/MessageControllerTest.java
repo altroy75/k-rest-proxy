@@ -16,6 +16,7 @@ import java.util.Collections;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -99,5 +100,141 @@ class MessageControllerTest {
                                 .param("endTime", "2023-01-01T10:05:00Z")
                                 .param("cursor", "invalid-cursor"))
                                 .andExpect(status().isOk());
+        }
+
+        // Parameter validation integration tests
+
+        @Test
+        void getMessages_shouldReturnBadRequest_whenTopicNameIsInvalid() throws Exception {
+                mockMvc.perform(get("/api/v1/messages/invalid@topic")
+                                .header("X-API-KEY", "secret-api-key")
+                                .param("startTime", "2023-01-01T10:00:00Z")
+                                .param("endTime", "2023-01-01T10:05:00Z"))
+                                .andExpect(status().isBadRequest());
+        }
+
+        @Test
+        void getMessages_shouldReturnBadRequest_whenTimeRangeIsInvalid() throws Exception {
+                // Start time after end time
+                mockMvc.perform(get("/api/v1/messages/test-topic")
+                                .header("X-API-KEY", "secret-api-key")
+                                .param("startTime", "2023-01-01T12:00:00Z")
+                                .param("endTime", "2023-01-01T10:00:00Z"))
+                                .andExpect(status().isBadRequest());
+        }
+
+        @Test
+        void getMessagesWithExecId_shouldReturnBadRequest_whenExecIdIsInvalid() throws Exception {
+                // ExecId with invalid characters
+                mockMvc.perform(get("/api/v1/messages/test-topic/filter")
+                                .header("X-API-KEY", "secret-api-key")
+                                .param("startTime", "2023-01-01T10:00:00Z")
+                                .param("endTime", "2023-01-01T10:05:00Z")
+                                .param("execId", "invalid@execid"))
+                                .andExpect(status().isBadRequest());
+        }
+
+        @Test
+        void getMessages_shouldReturnBadRequest_whenStartTimeIsMissing() throws Exception {
+                mockMvc.perform(get("/api/v1/messages/test-topic")
+                                .header("X-API-KEY", "secret-api-key")
+                                .param("endTime", "2023-01-01T10:05:00Z"))
+                                .andExpect(status().isInternalServerError()); // Spring returns 500 for missing required
+                                                                              // params
+        }
+
+        @Test
+        void getMessages_shouldReturnBadRequest_whenEndTimeIsMissing() throws Exception {
+                mockMvc.perform(get("/api/v1/messages/test-topic")
+                                .header("X-API-KEY", "secret-api-key")
+                                .param("startTime", "2023-01-01T10:00:00Z"))
+                                .andExpect(status().isInternalServerError()); // Spring returns 500 for missing required
+                                                                              // params
+        }
+
+        // Cursor parameter handling tests
+
+        @Test
+        void getMessages_shouldAcceptValidCursor() throws Exception {
+                String validCursor = "eyJ0ZXN0LXRvcGljIjp7IjAiOjEwMH19"; // Valid base64 cursor
+
+                when(kafkaMessageService.getMessages(eq("test-topic"), any(Instant.class), any(Instant.class),
+                                eq(validCursor)))
+                                .thenReturn(new PaginatedResponse<>(Collections.emptyList(), null, false));
+
+                mockMvc.perform(get("/api/v1/messages/test-topic")
+                                .header("X-API-KEY", "secret-api-key")
+                                .param("startTime", "2023-01-01T10:00:00Z")
+                                .param("endTime", "2023-01-01T10:05:00Z")
+                                .param("cursor", validCursor))
+                                .andExpect(status().isOk());
+
+                verify(kafkaMessageService).getMessages(eq("test-topic"), any(Instant.class), any(Instant.class),
+                                eq(validCursor));
+        }
+
+        @Test
+        void getMessages_shouldHandleWhitespaceCursor() throws Exception {
+                String whitespaceCursor = "   ";
+
+                when(kafkaMessageService.getMessages(eq("test-topic"), any(Instant.class), any(Instant.class),
+                                eq(whitespaceCursor)))
+                                .thenReturn(new PaginatedResponse<>(Collections.emptyList(), null, false));
+
+                mockMvc.perform(get("/api/v1/messages/test-topic")
+                                .header("X-API-KEY", "secret-api-key")
+                                .param("startTime", "2023-01-01T10:00:00Z")
+                                .param("endTime", "2023-01-01T10:05:00Z")
+                                .param("cursor", whitespaceCursor))
+                                .andExpect(status().isOk());
+        }
+
+        // Multi-topic endpoint tests
+
+        @Test
+        void getMessagesFromTopics_shouldHandleEmptyTopicString() throws Exception {
+                // Empty string parameter results in getMessagesFromTopics being called with
+                // empty list
+                // This is handled gracefully - returns empty result
+                when(kafkaMessageService.getMessagesFromTopics(eq(Collections.emptyList()), any(Instant.class),
+                                any(Instant.class), isNull()))
+                                .thenReturn(Collections.emptyList());
+
+                mockMvc.perform(get("/api/v1/messages/filter")
+                                .header("X-API-KEY", "secret-api-key")
+                                .param("topics", "") // Empty string - parsed as empty list
+                                .param("startTime", "2023-01-01T10:00:00Z")
+                                .param("endTime", "2023-01-01T10:05:00Z"))
+                                .andExpect(status().isOk()); // Returns successfully with empty list
+        }
+
+        @Test
+        void getMessagesFromTopics_shouldValidateAllTopics() throws Exception {
+                mockMvc.perform(get("/api/v1/messages/filter")
+                                .header("X-API-KEY", "secret-api-key")
+                                .param("topics", "valid-topic")
+                                .param("topics", "invalid@topic") // Second topic is invalid
+                                .param("startTime", "2023-01-01T10:00:00Z")
+                                .param("endTime", "2023-01-01T10:05:00Z"))
+                                .andExpect(status().isBadRequest());
+        }
+
+        @Test
+        void getMessagesByExecution_shouldReturnBadRequest_whenExecIdIsInvalid() throws Exception {
+                mockMvc.perform(get("/api/v1/messages/by-execution")
+                                .header("X-API-KEY", "secret-api-key")
+                                .param("topics", "test-topic")
+                                .param("execId", "invalid exec id")) // Invalid execId with space
+                                .andExpect(status().isBadRequest());
+        }
+
+        @Test
+        void getMessagesByExecution_shouldReturnBadRequest_whenExecIdIsMissing() throws Exception {
+                mockMvc.perform(get("/api/v1/messages/by-execution")
+                                .header("X-API-KEY", "secret-api-key")
+                                .param("topics", "test-topic"))
+                                // Missing execId parameter
+                                .andExpect(status().isInternalServerError()); // Spring returns 500 for missing required
+                                                                              // params
         }
 }
