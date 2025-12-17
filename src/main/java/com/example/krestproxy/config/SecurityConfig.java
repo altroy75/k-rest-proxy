@@ -1,5 +1,6 @@
 package com.example.krestproxy.config;
 
+import com.example.krestproxy.filter.RequestHeaderFilter;
 import com.example.krestproxy.security.ApiKeyAuthenticationFilter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,9 +17,11 @@ public class SecurityConfig {
 
     private static final Logger logger = LoggerFactory.getLogger(SecurityConfig.class);
     private final ApiKeyAuthenticationFilter apiKeyAuthenticationFilter;
+    private final RequestHeaderFilter requestHeaderFilter;
 
-    public SecurityConfig(ApiKeyAuthenticationFilter apiKeyAuthenticationFilter) {
+    public SecurityConfig(ApiKeyAuthenticationFilter apiKeyAuthenticationFilter, RequestHeaderFilter requestHeaderFilter) {
         this.apiKeyAuthenticationFilter = apiKeyAuthenticationFilter;
+        this.requestHeaderFilter = requestHeaderFilter;
         logger.info("Security configuration initialized with API key authentication");
     }
 
@@ -37,7 +40,8 @@ public class SecurityConfig {
                         .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
                         .anyRequest().authenticated())
                 .addFilterBefore(apiKeyAuthenticationFilter,
-                        org.springframework.security.web.access.intercept.AuthorizationFilter.class);
+                        org.springframework.security.web.access.intercept.AuthorizationFilter.class)
+                .addFilterBefore(requestHeaderFilter, ApiKeyAuthenticationFilter.class);
 
         logger.info("Security filter chain configured with headers and health endpoint exclusions");
         return http.build();
