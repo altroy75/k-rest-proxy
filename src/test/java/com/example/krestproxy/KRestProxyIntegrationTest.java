@@ -106,6 +106,8 @@ public class KRestProxyIntegrationTest {
                 // Call API
                 HttpHeaders headers = new HttpHeaders();
                 headers.set("X-API-KEY", "secret-api-key");
+                headers.set("Request-ID", "req-test-1");
+                headers.set("RLT-ID", "1001");
                 HttpEntity<String> entity = new HttpEntity<>(headers);
 
                 String url = "https://localhost:" + port + "/api/v1/messages/" + topic +
@@ -178,6 +180,8 @@ public class KRestProxyIntegrationTest {
                 // Call API
                 HttpHeaders headers = new HttpHeaders();
                 headers.set("X-API-KEY", "secret-api-key");
+                headers.set("Request-ID", "req-test-2");
+                headers.set("RLT-ID", "1001");
                 HttpEntity<String> entity = new HttpEntity<>(headers);
 
                 String url = "https://localhost:" + port + "/api/v1/messages/" + topic + "/filter" +
@@ -271,6 +275,8 @@ public class KRestProxyIntegrationTest {
                 // 3. Call the new API
                 HttpHeaders headers = new HttpHeaders();
                 headers.set("X-API-KEY", "secret-api-key");
+                headers.set("Request-ID", "req-test-3");
+                headers.set("RLT-ID", "1001");
                 HttpEntity<String> entity = new HttpEntity<>(headers);
 
                 String url = "https://localhost:" + port + "/api/v1/messages/by-execution" +

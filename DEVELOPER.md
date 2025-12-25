@@ -154,6 +154,8 @@ Requires an API Key header: `X-API-KEY`.
 
 ```bash
 curl -k -H "X-API-KEY: your-api-key" \
+     -H "Request-ID: req-123" \
+     -H "RLT-ID: 1001" \
      "https://localhost:8443/api/v1/messages/my-topic?startTime=2023-10-27T10:00:00Z&endTime=2023-10-27T10:05:00Z"
 ```
 
@@ -171,6 +173,8 @@ To fetch the next page, pass the `nextCursor` value as the `cursor` parameter:
 
 ```bash
 curl -k -H "X-API-KEY: your-api-key" \
+     -H "Request-ID: req-124" \
+     -H "RLT-ID: 1001" \
      "https://localhost:8443/api/v1/messages/my-topic?startTime=2023-10-27T10:00:00Z&endTime=2023-10-27T10:05:00Z&cursor=eyIwIjoxMjN9"
 ```
 
@@ -190,6 +194,8 @@ curl -k -H "X-API-KEY: your-api-key" \
 
 ```bash
 curl -k -H "X-API-KEY: your-api-key" \
+     -H "Request-ID: req-125" \
+     -H "RLT-ID: 1001" \
      "https://localhost:8443/api/v1/messages/my-topic/filter?startTime=2023-10-27T10:00:00Z&endTime=2023-10-27T10:05:00Z&execId=12345"
 ```
 

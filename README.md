@@ -29,6 +29,8 @@ curl -k https://localhost:8443/actuator/health
 
 # Query messages (requires X-API-KEY header)
 curl -k -H "X-API-KEY: secret-api-key" \
+  -H "Request-ID: req-1" \
+  -H "RLT-ID: 1001" \
   "https://localhost:8443/api/v1/messages/my-topic?startTime=2024-01-01T00:00:00Z&endTime=2024-01-01T01:00:00Z"
 ```
 
@@ -44,7 +46,10 @@ mvn spring-boot:run
 
 ## API Endpoints
 
-All endpoints require the `X-API-KEY` header for authentication.
+All endpoints require the following headers:
+- `X-API-KEY`: API key for authentication
+- `Request-ID`: Unique request identifier
+- `RLT-ID`: RLT identifier (must be an integer)
 
 ### Get Messages by Time Range
 
