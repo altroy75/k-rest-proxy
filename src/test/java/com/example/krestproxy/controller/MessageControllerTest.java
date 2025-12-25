@@ -35,6 +35,8 @@ class MessageControllerTest {
         @Test
         void getMessages_shouldReturnUnauthorized_whenApiKeyIsMissing() throws Exception {
                 mockMvc.perform(get("/api/v1/messages/test-topic")
+                                .header("Request-ID", "req-1")
+                                .header("RLT-ID", "1001")
                                 .param("startTime", "2023-01-01T10:00:00Z")
                                 .param("endTime", "2023-01-01T10:05:00Z"))
                                 .andExpect(status().isUnauthorized());
@@ -44,6 +46,8 @@ class MessageControllerTest {
         void getMessages_shouldReturnUnauthorized_whenApiKeyIsInvalid() throws Exception {
                 mockMvc.perform(get("/api/v1/messages/test-topic")
                                 .header("X-API-KEY", "invalid-key")
+                                .header("Request-ID", "req-1")
+                                .header("RLT-ID", "1001")
                                 .param("startTime", "2023-01-01T10:00:00Z")
                                 .param("endTime", "2023-01-01T10:05:00Z"))
                                 .andExpect(status().isUnauthorized());
@@ -62,6 +66,8 @@ class MessageControllerTest {
 
                 mockMvc.perform(get("/api/v1/messages/test-topic")
                                 .header("X-API-KEY", "secret-api-key")
+                                .header("Request-ID", "req-1")
+                                .header("RLT-ID", "1001")
                                 .param("startTime", "2023-01-01T10:00:00Z")
                                 .param("endTime", "2023-01-01T10:05:00Z"))
                                 .andExpect(status().isOk())
@@ -80,6 +86,8 @@ class MessageControllerTest {
 
                 mockMvc.perform(get("/api/v1/messages/test-topic/filter")
                                 .header("X-API-KEY", "secret-api-key")
+                                .header("Request-ID", "req-1")
+                                .header("RLT-ID", "1001")
                                 .param("startTime", "2023-01-01T10:00:00Z")
                                 .param("endTime", "2023-01-01T10:05:00Z")
                                 .param("execId", "exec-1"))
@@ -96,6 +104,8 @@ class MessageControllerTest {
 
                 mockMvc.perform(get("/api/v1/messages/test-topic")
                                 .header("X-API-KEY", "secret-api-key")
+                                .header("Request-ID", "req-1")
+                                .header("RLT-ID", "1001")
                                 .param("startTime", "2023-01-01T10:00:00Z")
                                 .param("endTime", "2023-01-01T10:05:00Z")
                                 .param("cursor", "invalid-cursor"))
@@ -108,6 +118,8 @@ class MessageControllerTest {
         void getMessages_shouldReturnBadRequest_whenTopicNameIsInvalid() throws Exception {
                 mockMvc.perform(get("/api/v1/messages/invalid@topic")
                                 .header("X-API-KEY", "secret-api-key")
+                                .header("Request-ID", "req-1")
+                                .header("RLT-ID", "1001")
                                 .param("startTime", "2023-01-01T10:00:00Z")
                                 .param("endTime", "2023-01-01T10:05:00Z"))
                                 .andExpect(status().isBadRequest());
@@ -118,6 +130,8 @@ class MessageControllerTest {
                 // Start time after end time
                 mockMvc.perform(get("/api/v1/messages/test-topic")
                                 .header("X-API-KEY", "secret-api-key")
+                                .header("Request-ID", "req-1")
+                                .header("RLT-ID", "1001")
                                 .param("startTime", "2023-01-01T12:00:00Z")
                                 .param("endTime", "2023-01-01T10:00:00Z"))
                                 .andExpect(status().isBadRequest());
@@ -128,6 +142,8 @@ class MessageControllerTest {
                 // ExecId with invalid characters
                 mockMvc.perform(get("/api/v1/messages/test-topic/filter")
                                 .header("X-API-KEY", "secret-api-key")
+                                .header("Request-ID", "req-1")
+                                .header("RLT-ID", "1001")
                                 .param("startTime", "2023-01-01T10:00:00Z")
                                 .param("endTime", "2023-01-01T10:05:00Z")
                                 .param("execId", "invalid@execid"))
@@ -138,6 +154,8 @@ class MessageControllerTest {
         void getMessages_shouldReturnBadRequest_whenStartTimeIsMissing() throws Exception {
                 mockMvc.perform(get("/api/v1/messages/test-topic")
                                 .header("X-API-KEY", "secret-api-key")
+                                .header("Request-ID", "req-1")
+                                .header("RLT-ID", "1001")
                                 .param("endTime", "2023-01-01T10:05:00Z"))
                                 .andExpect(status().isInternalServerError()); // Spring returns 500 for missing required
                                                                               // params
@@ -147,6 +165,8 @@ class MessageControllerTest {
         void getMessages_shouldReturnBadRequest_whenEndTimeIsMissing() throws Exception {
                 mockMvc.perform(get("/api/v1/messages/test-topic")
                                 .header("X-API-KEY", "secret-api-key")
+                                .header("Request-ID", "req-1")
+                                .header("RLT-ID", "1001")
                                 .param("startTime", "2023-01-01T10:00:00Z"))
                                 .andExpect(status().isInternalServerError()); // Spring returns 500 for missing required
                                                                               // params
@@ -164,6 +184,8 @@ class MessageControllerTest {
 
                 mockMvc.perform(get("/api/v1/messages/test-topic")
                                 .header("X-API-KEY", "secret-api-key")
+                                .header("Request-ID", "req-1")
+                                .header("RLT-ID", "1001")
                                 .param("startTime", "2023-01-01T10:00:00Z")
                                 .param("endTime", "2023-01-01T10:05:00Z")
                                 .param("cursor", validCursor))
@@ -183,6 +205,8 @@ class MessageControllerTest {
 
                 mockMvc.perform(get("/api/v1/messages/test-topic")
                                 .header("X-API-KEY", "secret-api-key")
+                                .header("Request-ID", "req-1")
+                                .header("RLT-ID", "1001")
                                 .param("startTime", "2023-01-01T10:00:00Z")
                                 .param("endTime", "2023-01-01T10:05:00Z")
                                 .param("cursor", whitespaceCursor))
@@ -202,6 +226,8 @@ class MessageControllerTest {
 
                 mockMvc.perform(get("/api/v1/messages/filter")
                                 .header("X-API-KEY", "secret-api-key")
+                                .header("Request-ID", "req-1")
+                                .header("RLT-ID", "1001")
                                 .param("topics", "") // Empty string - parsed as empty list
                                 .param("startTime", "2023-01-01T10:00:00Z")
                                 .param("endTime", "2023-01-01T10:05:00Z"))
@@ -212,6 +238,8 @@ class MessageControllerTest {
         void getMessagesFromTopics_shouldValidateAllTopics() throws Exception {
                 mockMvc.perform(get("/api/v1/messages/filter")
                                 .header("X-API-KEY", "secret-api-key")
+                                .header("Request-ID", "req-1")
+                                .header("RLT-ID", "1001")
                                 .param("topics", "valid-topic")
                                 .param("topics", "invalid@topic") // Second topic is invalid
                                 .param("startTime", "2023-01-01T10:00:00Z")
@@ -223,6 +251,8 @@ class MessageControllerTest {
         void getMessagesByExecution_shouldReturnBadRequest_whenExecIdIsInvalid() throws Exception {
                 mockMvc.perform(get("/api/v1/messages/by-execution")
                                 .header("X-API-KEY", "secret-api-key")
+                                .header("Request-ID", "req-1")
+                                .header("RLT-ID", "1001")
                                 .param("topics", "test-topic")
                                 .param("execId", "invalid exec id")) // Invalid execId with space
                                 .andExpect(status().isBadRequest());
@@ -232,6 +262,8 @@ class MessageControllerTest {
         void getMessagesByExecution_shouldReturnBadRequest_whenExecIdIsMissing() throws Exception {
                 mockMvc.perform(get("/api/v1/messages/by-execution")
                                 .header("X-API-KEY", "secret-api-key")
+                                .header("Request-ID", "req-1")
+                                .header("RLT-ID", "1001")
                                 .param("topics", "test-topic"))
                                 // Missing execId parameter
                                 .andExpect(status().isInternalServerError()); // Spring returns 500 for missing required

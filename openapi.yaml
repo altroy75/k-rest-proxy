@@ -76,9 +76,28 @@ paths:
           schema:
             type: string
           example: b3JkZXItZXZlbnRzOjA6MTAwMA==
+        - name: Request-ID
+          in: header
+          required: true
+          description: Unique request identifier
+          schema:
+            type: string
+          example: 'req-123456'
+        - name: RLT-ID
+          in: header
+          required: true
+          description: RLT identifier (must be an integer)
+          schema:
+            type: integer
+          example: 1001
       responses:
         '200':
           description: Successful response with paginated messages
+          headers:
+            RLT-ID:
+              description: RLT identifier returned in response
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -167,9 +186,28 @@ paths:
           schema:
             type: string
           example: d29ya2Zsb3ctZXZlbnRzOjE6NTAw
+        - name: Request-ID
+          in: header
+          required: true
+          description: Unique request identifier
+          schema:
+            type: string
+          example: 'req-123456'
+        - name: RLT-ID
+          in: header
+          required: true
+          description: RLT identifier (must be an integer)
+          schema:
+            type: integer
+          example: 1001
       responses:
         '200':
           description: Successful response with filtered paginated messages
+          headers:
+            RLT-ID:
+              description: RLT identifier returned in response
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -228,9 +266,28 @@ paths:
             type: string
             pattern: '^[a-zA-Z0-9_-]+$'
           example: exec-2024-001
+        - name: Request-ID
+          in: header
+          required: true
+          description: Unique request identifier
+          schema:
+            type: string
+          example: 'req-123456'
+        - name: RLT-ID
+          in: header
+          required: true
+          description: RLT identifier (must be an integer)
+          schema:
+            type: integer
+          example: 1001
       responses:
         '200':
           description: Successful response with messages from all topics
+          headers:
+            RLT-ID:
+              description: RLT identifier returned in response
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -286,9 +343,28 @@ paths:
             type: string
             pattern: '^[a-zA-Z0-9_-]+$'
           example: exec-2024-001
+        - name: Request-ID
+          in: header
+          required: true
+          description: Unique request identifier
+          schema:
+            type: string
+          example: 'req-123456'
+        - name: RLT-ID
+          in: header
+          required: true
+          description: RLT identifier (must be an integer)
+          schema:
+            type: integer
+          example: 1001
       responses:
         '200':
           description: Successful response with execution messages
+          headers:
+            RLT-ID:
+              description: RLT identifier returned in response
+              schema:
+                type: integer
           content:
             application/json:
               schema:
