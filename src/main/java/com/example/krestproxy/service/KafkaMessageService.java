@@ -6,6 +6,7 @@ import com.example.krestproxy.dto.PaginatedResponse;
 import com.example.krestproxy.exception.ExecutionNotFoundException;
 import com.example.krestproxy.exception.KafkaOperationException;
 import com.example.krestproxy.util.CursorUtil;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.avro.generic.GenericDatumWriter;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.avro.io.EncoderFactory;
@@ -45,12 +46,14 @@ public class KafkaMessageService {
 
     private final ObjectPool<Consumer<Object, Object>> consumerPool;
     private final KafkaProperties kafkaProperties;
+    private final ObjectMapper objectMapper;
 
     @Autowired
     public KafkaMessageService(ObjectPool<Consumer<Object, Object>> consumerPool,
-            KafkaProperties kafkaProperties) {
+            KafkaProperties kafkaProperties, ObjectMapper objectMapper) {
         this.consumerPool = consumerPool;
         this.kafkaProperties = kafkaProperties;
+        this.objectMapper = objectMapper;
         logger.info("KafkaMessageService initialized with consumer pool");
     }
 
@@ -330,8 +333,16 @@ public class KafkaMessageService {
     }
 
     private MessageDto createMessageDto(org.apache.kafka.clients.consumer.ConsumerRecord<Object, Object> record) {
-        String content = switch (record.value()) {
-            case GenericRecord genericRecord -> convertAvroToJson(genericRecord);
+        Object content = switch (record.value()) {
+            case GenericRecord genericRecord -> {
+                String jsonString = convertAvroToJson(genericRecord);
+                try {
+                    yield objectMapper.readTree(jsonString);
+                } catch (Exception e) {
+                    logger.error("Error parsing JSON content", e);
+                    yield jsonString; // Fallback to string if parsing fails
+                }
+            }
             case null -> null;
             case Object o -> o.toString();
         };
