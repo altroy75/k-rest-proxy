@@ -55,10 +55,12 @@ class MessageControllerTest {
 
         @Test
         void getMessages_shouldReturnMessages_whenApiKeyIsValid() throws Exception {
+                java.util.Map<String, String> content1 = java.util.Collections.singletonMap("key", "val1");
+                java.util.Map<String, String> content2 = java.util.Collections.singletonMap("key", "val2");
                 com.example.krestproxy.dto.MessageDto msg1 = new com.example.krestproxy.dto.MessageDto("test-topic",
-                                "msg1", 1000L, 0, 0L);
+                                content1, 1000L, 0, 0L);
                 com.example.krestproxy.dto.MessageDto msg2 = new com.example.krestproxy.dto.MessageDto("test-topic",
-                                "msg2", 2000L, 0, 1L);
+                                content2, 2000L, 0, 1L);
 
                 when(kafkaMessageService.getMessages(eq("test-topic"), any(Instant.class), any(Instant.class),
                                 isNull()))
@@ -72,13 +74,14 @@ class MessageControllerTest {
                                 .param("endTime", "2023-01-01T10:05:00Z"))
                                 .andExpect(status().isOk())
                                 .andExpect(content().json(
-                                                "{\"data\":[{\"topicName\":\"test-topic\",\"content\":\"msg1\",\"timestamp\":1000,\"partition\":0,\"offset\":0},{\"topicName\":\"test-topic\",\"content\":\"msg2\",\"timestamp\":2000,\"partition\":0,\"offset\":1}],\"nextCursor\":null,\"hasMore\":false}"));
+                                                "{\"data\":[{\"topicName\":\"test-topic\",\"content\":{\"key\":\"val1\"},\"timestamp\":1000,\"partition\":0,\"offset\":0},{\"topicName\":\"test-topic\",\"content\":{\"key\":\"val2\"},\"timestamp\":2000,\"partition\":0,\"offset\":1}],\"nextCursor\":null,\"hasMore\":false}"));
         }
 
         @Test
         void getMessagesWithExecId_shouldReturnMessages_whenApiKeyIsValid() throws Exception {
+                java.util.Map<String, String> content1 = java.util.Collections.singletonMap("key", "val1");
                 com.example.krestproxy.dto.MessageDto msg1 = new com.example.krestproxy.dto.MessageDto("test-topic",
-                                "msg1", 1000L, 0, 0L);
+                                content1, 1000L, 0, 0L);
 
                 when(kafkaMessageService.getMessagesWithExecId(eq("test-topic"), any(Instant.class), any(Instant.class),
                                 eq("exec-1"), isNull()))
@@ -93,7 +96,7 @@ class MessageControllerTest {
                                 .param("execId", "exec-1"))
                                 .andExpect(status().isOk())
                                 .andExpect(content().json(
-                                                "{\"data\":[{\"topicName\":\"test-topic\",\"content\":\"msg1\",\"timestamp\":1000,\"partition\":0,\"offset\":0}],\"nextCursor\":null,\"hasMore\":false}"));
+                                                "{\"data\":[{\"topicName\":\"test-topic\",\"content\":{\"key\":\"val1\"},\"timestamp\":1000,\"partition\":0,\"offset\":0}],\"nextCursor\":null,\"hasMore\":false}"));
         }
 
         @Test

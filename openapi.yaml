@@ -108,12 +108,16 @@ paths:
                   value:
                     data:
                       - topicName: order-events
-                        content: '{"orderId": "12345", "status": "completed"}'
+                        content:
+                          orderId: "12345"
+                          status: "completed"
                         timestamp: 1732579200000
                         partition: 0
                         offset: 1000
                       - topicName: order-events
-                        content: '{"orderId": "12346", "status": "pending"}'
+                        content:
+                          orderId: "12346"
+                          status: "pending"
                         timestamp: 1732579260000
                         partition: 0
                         offset: 1001
@@ -124,7 +128,9 @@ paths:
                   value:
                     data:
                       - topicName: order-events
-                        content: '{"orderId": "12350", "status": "shipped"}'
+                        content:
+                          orderId: "12350"
+                          status: "shipped"
                         timestamp: 1732580000000
                         partition: 0
                         offset: 2000
@@ -296,12 +302,16 @@ paths:
                   $ref: '#/components/schemas/MessageDto'
               example:
                 - topicName: order-events
-                  content: '{"orderId": "12345", "status": "completed"}'
+                  content:
+                    orderId: "12345"
+                    status: "completed"
                   timestamp: 1732579200000
                   partition: 0
                   offset: 1000
                 - topicName: payment-events
-                  content: '{"paymentId": "pay-001", "amount": 99.99}'
+                  content:
+                    paymentId: "pay-001"
+                    amount: 99.99
                   timestamp: 1732579210000
                   partition: 1
                   offset: 500
@@ -401,9 +411,11 @@ components:
           description: The Kafka topic name
           example: order-events
         content:
-          type: string
-          description: Message content (Avro deserialized to JSON string)
-          example: '{"orderId": "12345", "status": "completed"}'
+          type: object
+          description: Message content (Avro deserialized to JSON object)
+          example:
+            orderId: "12345"
+            status: "completed"
         timestamp:
           type: integer
           format: int64

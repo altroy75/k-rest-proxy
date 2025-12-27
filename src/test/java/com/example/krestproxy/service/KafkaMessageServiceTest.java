@@ -4,6 +4,7 @@ import com.example.krestproxy.config.KafkaProperties;
 import com.example.krestproxy.dto.MessageDto;
 import com.example.krestproxy.dto.PaginatedResponse;
 import com.example.krestproxy.util.CursorUtil;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericRecord;
@@ -38,11 +39,13 @@ class KafkaMessageServiceTest {
 
         private KafkaMessageService kafkaMessageService;
 
+        private ObjectMapper objectMapper = new ObjectMapper();
+
         @BeforeEach
         void setUp() throws Exception {
                 lenient().when(kafkaProperties.getMaxMessagesPerRequest()).thenReturn(10000);
                 lenient().when(kafkaProperties.getPollTimeoutMs()).thenReturn(100L);
-                kafkaMessageService = new KafkaMessageService(consumerPool, kafkaProperties);
+                kafkaMessageService = new KafkaMessageService(consumerPool, kafkaProperties, objectMapper);
         }
 
         @Test
@@ -93,9 +96,9 @@ class KafkaMessageServiceTest {
                 List<MessageDto> messages = response.data();
 
                 assertEquals(2, messages.size());
-                assertEquals("msg1", messages.get(0).content());
+                assertEquals("msg1", messages.get(0).content().toString());
                 assertEquals(topic, messages.get(0).topicName());
-                assertEquals("msg2", messages.get(1).content());
+                assertEquals("msg2", messages.get(1).content().toString());
                 assertEquals(topic, messages.get(1).topicName());
                 assertFalse(response.hasMore());
 
@@ -167,7 +170,7 @@ class KafkaMessageServiceTest {
                 List<MessageDto> messages = response.data();
 
                 assertEquals(1, messages.size());
-                assertEquals("msg1", messages.get(0).content());
+                assertEquals("msg1", messages.get(0).content().toString());
                 assertEquals(topic, messages.get(0).topicName());
                 assertFalse(response.hasMore());
 
@@ -239,7 +242,7 @@ class KafkaMessageServiceTest {
                 // Since we use ArrayList to collect partitions, it should follow topic order.
                 // But poll results might not guarantee order. Let's check content.
 
-                List<String> contents = messages.stream().map(MessageDto::content).toList();
+                List<String> contents = messages.stream().map(m -> m.content().toString()).toList();
                 List<String> topicNames = messages.stream().map(MessageDto::topicName).toList();
 
                 // Check contains
@@ -324,7 +327,7 @@ class KafkaMessageServiceTest {
                                 .getMessagesForExecution(Collections.singletonList(dataTopic), execId);
 
                 assertEquals(1, result.size());
-                assertEquals("value", result.get(0).content());
+                assertEquals("value", result.get(0).content().toString());
                 assertEquals(1500, result.get(0).timestamp());
 
                 verify(consumerPool, times(2)).borrowObject();
@@ -395,8 +398,8 @@ class KafkaMessageServiceTest {
 
                 // Should only return 2 messages due to the limit
                 assertEquals(2, messages.size());
-                assertEquals("msg1", messages.get(0).content());
-                assertEquals("msg2", messages.get(1).content());
+                assertEquals("msg1", messages.get(0).content().toString());
+                assertEquals("msg2", messages.get(1).content().toString());
                 assertTrue(response.hasMore());
                 assertNotNull(response.nextCursor());
 
@@ -449,7 +452,7 @@ class KafkaMessageServiceTest {
                 List<MessageDto> messages = response.data();
 
                 assertEquals(1, messages.size());
-                assertEquals("msg5", messages.get(0).content());
+                assertEquals("msg5", messages.get(0).content().toString());
                 assertEquals(5L, messages.get(0).offset());
                 assertFalse(response.hasMore());
 
@@ -880,7 +883,7 @@ class KafkaMessageServiceTest {
                                 endTime, null);
 
                 assertEquals(1, response.data().size());
-                assertEquals("at-start", response.data().get(0).content());
+                assertEquals("at-start", response.data().get(0).content().toString());
                 verify(consumerPool).returnObject(consumer);
         }
 
@@ -924,7 +927,7 @@ class KafkaMessageServiceTest {
 
                 // Should be included since timestamp <= endTime
                 assertEquals(1, response.data().size());
-                assertEquals("at-end", response.data().get(0).content());
+                assertEquals("at-end", response.data().get(0).content().toString());
                 verify(consumerPool).returnObject(consumer);
         }
 

@@ -126,8 +126,8 @@ public class KRestProxyIntegrationTest {
                 assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
                 List<MessageDto> messages = response.getBody().data();
                 assertThat(messages).isNotEmpty();
-                assertThat(messages.get(0).content()).contains("\"name\":\"Alice\"");
-                assertThat(messages.get(0).content()).contains("\"age\":30");
+                assertThat(messages.get(0).content().toString()).contains("\"name\":\"Alice\"");
+                assertThat(messages.get(0).content().toString()).contains("\"age\":30");
         }
 
         @Test
@@ -202,8 +202,8 @@ public class KRestProxyIntegrationTest {
                 assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
                 List<MessageDto> messages = response.getBody().data();
                 assertThat(messages).hasSize(1);
-                assertThat(messages.get(0).content()).contains("match");
-                assertThat(messages.get(0).content()).doesNotContain("no-match");
+                assertThat(messages.get(0).content().toString()).contains("match");
+                assertThat(messages.get(0).content().toString()).doesNotContain("no-match");
         }
 
         @Test
@@ -297,11 +297,11 @@ public class KRestProxyIntegrationTest {
                 assertThat(messages).isNotNull();
 
                 // Should find the one inside the window
-                boolean foundInside = messages.stream().anyMatch(m -> m.content().contains("inside-window"));
+                boolean foundInside = messages.stream().anyMatch(m -> m.content().toString().contains("inside-window"));
                 assertThat(foundInside).as("Should contain message inside time window").isTrue();
 
                 // Should NOT find the one outside the window
-                boolean foundOutside = messages.stream().anyMatch(m -> m.content().contains("outside-window"));
+                boolean foundOutside = messages.stream().anyMatch(m -> m.content().toString().contains("outside-window"));
                 assertThat(foundOutside).as("Should NOT contain message outside time window").isFalse();
         }
 
