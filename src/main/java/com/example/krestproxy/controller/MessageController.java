@@ -96,4 +96,18 @@ public class MessageController {
         logger.info("Returning {} messages for execution: {}", messages.size(), execId);
         return ResponseEntity.ok(messages);
     }
+
+    @GetMapping("/batch")
+    public ResponseEntity<PaginatedResponse<MessageDto>> getBatchMessages(
+            @RequestParam List<String> topics,
+            @RequestParam(required = false) String cursor) {
+
+        logger.info("GET /api/v1/messages/batch topics={} cursor={}", topics, cursor);
+        requestValidator.validateTopicsListSize(topics);
+        topics.forEach(requestValidator::validateTopicName);
+
+        var response = kafkaMessageService.getBatchMessages(topics, cursor);
+        logger.info("Returning {} batch messages for topics: {}", response.data().size(), topics);
+        return ResponseEntity.ok(response);
+    }
 }

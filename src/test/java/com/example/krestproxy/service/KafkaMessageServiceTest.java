@@ -969,4 +969,130 @@ class KafkaMessageServiceTest {
 
                 verify(consumerPool).returnObject(consumer);
         }
+
+        // Batch processing tests
+
+        @Test
+        void getBatchMessages_shouldReturnMessagesFromBeginning_whenNoCursor() throws Exception {
+                String topic = "batch-topic";
+                TopicPartition partition0 = new TopicPartition(topic, 0);
+
+                when(consumerPool.borrowObject()).thenReturn(consumer);
+                when(consumer.partitionsFor(topic)).thenReturn(
+                                Collections.singletonList(
+                                                new org.apache.kafka.common.PartitionInfo(topic, 0, null, null, null)));
+
+                // Mock end offsets (High Watermark)
+                Map<TopicPartition, Long> endOffsets = new HashMap<>();
+                endOffsets.put(partition0, 10L);
+                when(consumer.endOffsets(any())).thenReturn(endOffsets);
+
+                // Mock poll
+                ConsumerRecord<Object, Object> record1 = new ConsumerRecord<>(topic, 0, 0L, 1000L,
+                                org.apache.kafka.common.record.TimestampType.CREATE_TIME, 0, 0, "key", "msg1",
+                                new org.apache.kafka.common.header.internals.RecordHeaders(), Optional.empty());
+
+                Map<TopicPartition, List<ConsumerRecord<Object, Object>>> recordsMap = new HashMap<>();
+                recordsMap.put(partition0, Arrays.asList(record1));
+                ConsumerRecords<Object, Object> records = new ConsumerRecords<>(recordsMap);
+
+                when(consumer.poll(any())).thenReturn(records)
+                                .thenReturn(new ConsumerRecords<>(Collections.emptyMap()));
+
+                PaginatedResponse<MessageDto> response = kafkaMessageService.getBatchMessages(Collections.singletonList(topic), null);
+
+                assertEquals(1, response.data().size());
+                assertEquals("msg1", response.data().get(0).content().toString());
+
+                // Should start from beginning
+                verify(consumer).seekToBeginning(argThat(list -> list.contains(partition0)));
+                verify(consumerPool).returnObject(consumer);
+        }
+
+        @Test
+        void getBatchMessages_shouldResumeFromCursor() throws Exception {
+                String topic = "batch-topic-resume";
+                TopicPartition partition0 = new TopicPartition(topic, 0);
+
+                // Cursor at offset 5
+                Map<String, Map<Integer, Long>> cursorOffsets = new HashMap<>();
+                Map<Integer, Long> partitionOffsets = new HashMap<>();
+                partitionOffsets.put(0, 5L);
+                cursorOffsets.put(topic, partitionOffsets);
+                String cursor = CursorUtil.createCursor(cursorOffsets);
+
+                when(consumerPool.borrowObject()).thenReturn(consumer);
+                when(consumer.partitionsFor(topic)).thenReturn(
+                                Collections.singletonList(
+                                                new org.apache.kafka.common.PartitionInfo(topic, 0, null, null, null)));
+
+                // End offset is 10
+                Map<TopicPartition, Long> endOffsets = new HashMap<>();
+                endOffsets.put(partition0, 10L);
+                when(consumer.endOffsets(any())).thenReturn(endOffsets);
+
+                // Mock poll
+                ConsumerRecord<Object, Object> record1 = new ConsumerRecord<>(topic, 0, 5L, 1000L,
+                                org.apache.kafka.common.record.TimestampType.CREATE_TIME, 0, 0, "key", "msg5",
+                                new org.apache.kafka.common.header.internals.RecordHeaders(), Optional.empty());
+
+                Map<TopicPartition, List<ConsumerRecord<Object, Object>>> recordsMap = new HashMap<>();
+                recordsMap.put(partition0, Arrays.asList(record1));
+                ConsumerRecords<Object, Object> records = new ConsumerRecords<>(recordsMap);
+
+                when(consumer.poll(any())).thenReturn(records)
+                                .thenReturn(new ConsumerRecords<>(Collections.emptyMap()));
+
+                PaginatedResponse<MessageDto> response = kafkaMessageService.getBatchMessages(Collections.singletonList(topic), cursor);
+
+                assertEquals(1, response.data().size());
+                assertEquals("msg5", response.data().get(0).content().toString());
+
+                // Should seek to cursor
+                verify(consumer).seek(partition0, 5L);
+                verify(consumerPool).returnObject(consumer);
+        }
+
+        @Test
+        void getBatchMessages_shouldStopAtHighWatermark_andIndicateHasMore() throws Exception {
+                String topic = "batch-limit";
+                TopicPartition partition0 = new TopicPartition(topic, 0);
+
+                // Limit is 1 message
+                when(kafkaProperties.getMaxMessagesPerRequest()).thenReturn(1);
+
+                when(consumerPool.borrowObject()).thenReturn(consumer);
+                when(consumer.partitionsFor(topic)).thenReturn(
+                                Collections.singletonList(
+                                                new org.apache.kafka.common.PartitionInfo(topic, 0, null, null, null)));
+
+                // End offset is 10
+                Map<TopicPartition, Long> endOffsets = new HashMap<>();
+                endOffsets.put(partition0, 10L);
+                when(consumer.endOffsets(any())).thenReturn(endOffsets);
+
+                // Mock poll - return 2 records but we only take 1
+                ConsumerRecord<Object, Object> record1 = new ConsumerRecord<>(topic, 0, 0L, 1000L,
+                                org.apache.kafka.common.record.TimestampType.CREATE_TIME, 0, 0, "key", "msg1",
+                                new org.apache.kafka.common.header.internals.RecordHeaders(), Optional.empty());
+                 ConsumerRecord<Object, Object> record2 = new ConsumerRecord<>(topic, 0, 1L, 1001L,
+                                org.apache.kafka.common.record.TimestampType.CREATE_TIME, 0, 0, "key", "msg2",
+                                new org.apache.kafka.common.header.internals.RecordHeaders(), Optional.empty());
+
+                Map<TopicPartition, List<ConsumerRecord<Object, Object>>> recordsMap = new HashMap<>();
+                recordsMap.put(partition0, Arrays.asList(record1, record2));
+                ConsumerRecords<Object, Object> records = new ConsumerRecords<>(recordsMap);
+
+                when(consumer.poll(any())).thenReturn(records);
+
+                PaginatedResponse<MessageDto> response = kafkaMessageService.getBatchMessages(Collections.singletonList(topic), null);
+
+                assertEquals(1, response.data().size());
+                assertTrue(response.hasMore());
+                assertNotNull(response.nextCursor());
+
+                // Check next cursor value
+                Map<String, Map<Integer, Long>> nextOffsets = CursorUtil.parseCursor(response.nextCursor());
+                assertEquals(1L, nextOffsets.get(topic).get(0)); // Next offset should be 1
+        }
 }
