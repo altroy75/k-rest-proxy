@@ -272,4 +272,44 @@ class MessageControllerTest {
                                 .andExpect(status().isInternalServerError()); // Spring returns 500 for missing required
                                                                               // params
         }
+
+        @Test
+        void getBatchMessages_shouldReturnBatchMessages() throws Exception {
+                java.util.List<String> topics = Arrays.asList("topic1", "topic2");
+                String cursor = "cursor";
+                PaginatedResponse<com.example.krestproxy.dto.MessageDto> response = new PaginatedResponse<>(
+                                Collections.emptyList(), "nextCursor", true);
+
+                when(kafkaMessageService.getBatchMessages(topics, cursor)).thenReturn(response);
+
+                mockMvc.perform(get("/api/v1/messages/batch")
+                                .header("X-API-KEY", "secret-api-key")
+                                .header("Request-ID", "req-1")
+                                .header("RLT-ID", "1001")
+                                .param("topics", "topic1,topic2")
+                                .param("cursor", cursor))
+                                .andExpect(status().isOk())
+                                .andExpect(content().json("{\"data\":[],\"nextCursor\":\"nextCursor\",\"hasMore\":true}"));
+
+                verify(kafkaMessageService).getBatchMessages(topics, cursor);
+        }
+
+        @Test
+        void getBatchMessages_shouldValidateTopicsCount() throws Exception {
+                // Create a list with 31 topics
+                StringBuilder topicsParam = new StringBuilder();
+                for (int i = 0; i < 31; i++) {
+                        topicsParam.append("topic").append(i);
+                        if (i < 30) {
+                                topicsParam.append(",");
+                        }
+                }
+
+                mockMvc.perform(get("/api/v1/messages/batch")
+                                .header("X-API-KEY", "secret-api-key")
+                                .header("Request-ID", "req-1")
+                                .header("RLT-ID", "1001")
+                                .param("topics", topicsParam.toString()))
+                                .andExpect(status().isBadRequest());
+        }
 }

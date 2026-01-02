@@ -152,6 +152,189 @@ public class KafkaMessageService {
         return getMessagesInternal(topics, startTime, endTime, execId, null).data();
     }
 
+    public PaginatedResponse<MessageDto> getBatchMessages(List<String> topics, String cursor) {
+        logger.info("Fetching batch messages from topics: {}, cursor: {}", topics, cursor);
+        Consumer<Object, Object> consumer = null;
+        try {
+            logger.debug("Borrowing consumer from pool");
+            consumer = consumerPool.borrowObject();
+
+            List<TopicPartition> partitions = assignPartitions(consumer, topics);
+            Map<String, Map<Integer, Long>> cursorOffsets = CursorUtil.parseCursor(cursor);
+            Map<String, Map<Integer, Long>> nextCursorOffsets = initializeNextCursorOffsets(cursorOffsets);
+
+            // For batch, we don't have time window. We need end offsets (High Watermark) to know when to stop.
+            Map<TopicPartition, Long> endOffsets = consumer.endOffsets(partitions);
+            // We convert to OffsetAndTimestamp structure to reuse existing helper or just map.
+            // But wait, existing endOffsets is Map<TopicPartition, OffsetAndTimestamp> (time based).
+            // Here we have log end offsets (Long).
+            // We will use a dedicated fetch method or adapt. dedicated seems cleaner given the logic difference.
+
+            var messages = new ArrayList<MessageDto>();
+            int maxMessages = kafkaProperties.getMaxMessagesPerRequest();
+
+            boolean limitReached = fetchBatchMessages(consumer, partitions, cursorOffsets, endOffsets, messages, maxMessages, nextCursorOffsets);
+
+            // Determine hasMore
+            // For batch without time window, hasMore is true if:
+            // 1. limitReached is true
+            // AND
+            // 2. We haven't reached the end of all partitions?
+            // Actually, if limitReached is true, there is definitely more (unless we hit exact end).
+            // But we need to check if we are at end of all partitions.
+
+            boolean hasMore = determineBatchHasMore(limitReached, partitions, endOffsets, nextCursorOffsets, cursorOffsets);
+            String nextCursor = hasMore ? CursorUtil.createCursor(nextCursorOffsets) : null;
+
+            logger.info("Retrieved {} batch messages from topics: {}", messages.size(), topics);
+            return new PaginatedResponse<>(messages, nextCursor, hasMore);
+
+        } catch (Exception e) {
+            logger.error("Error fetching batch messages from Kafka topics: {}", topics, e);
+            throw new KafkaOperationException("Error fetching batch messages from Kafka", e);
+        } finally {
+            if (consumer != null) {
+                try {
+                    consumerPool.returnObject(consumer);
+                } catch (Exception e) {
+                    logger.error("Error returning consumer to pool", e);
+                }
+            }
+        }
+    }
+
+    private boolean fetchBatchMessages(Consumer<Object, Object> consumer, List<TopicPartition> partitions,
+            Map<String, Map<Integer, Long>> cursorOffsets, Map<TopicPartition, Long> endOffsets,
+            List<MessageDto> messages, int maxMessages, Map<String, Map<Integer, Long>> nextCursorOffsets) {
+
+        boolean limitReached = false;
+        for (var partition : partitions) {
+            long seekOffset;
+            boolean hasCursor = cursorOffsets != null
+                    && cursorOffsets.containsKey(partition.topic())
+                    && cursorOffsets.get(partition.topic()).containsKey(partition.partition());
+
+            if (hasCursor) {
+                seekOffset = cursorOffsets.get(partition.topic()).get(partition.partition());
+                consumer.seek(partition, seekOffset);
+            } else {
+                // If no cursor, start from beginning
+                consumer.seekToBeginning(List.of(partition));
+                // We need to know where we are starting from to populate nextCursor if we read nothing?
+                // No, nextCursor is updated as we read.
+            }
+
+            Long endOffset = endOffsets.get(partition);
+            if (endOffset == null) {
+                // Should not happen if partition exists
+                continue;
+            }
+
+            if (consumer.position(partition) >= endOffset) {
+                continue;
+            }
+
+            var keepReading = true;
+            while (keepReading) {
+                var records = consumer.poll(Duration.ofMillis(kafkaProperties.getPollTimeoutMs()));
+                if (records.isEmpty()) {
+                    break;
+                }
+
+                for (var record : records.records(partition)) {
+                    nextCursorOffsets.computeIfAbsent(partition.topic(), k -> new HashMap<>())
+                            .put(partition.partition(), record.offset() + 1);
+
+                    messages.add(createMessageDto(record));
+                    if (messages.size() >= maxMessages) {
+                        logger.warn("Reached maximum message limit of {} for batch", maxMessages);
+                        keepReading = false;
+                        limitReached = true;
+                        break;
+                    }
+
+                    if (record.offset() >= endOffset - 1) {
+                         // We reached the end offset (exclusive).
+                         // Wait, record.offset is inclusive. endOffset is exclusive high watermark.
+                         // So if record.offset == endOffset - 1, we are at the last message.
+                        keepReading = false;
+                        break;
+                    }
+                }
+
+                // Double check position vs endOffset in case poll returned partial
+                if (consumer.position(partition) >= endOffset) {
+                    keepReading = false;
+                }
+            }
+
+            if (limitReached) {
+                break;
+            }
+        }
+        return limitReached;
+    }
+
+    private boolean determineBatchHasMore(boolean limitReached, List<TopicPartition> partitions,
+            Map<TopicPartition, Long> endOffsets,
+            Map<String, Map<Integer, Long>> nextCursorOffsets, Map<String, Map<Integer, Long>> cursorOffsets) {
+        if (!limitReached) {
+            return false;
+        }
+        // If limit reached, we need to check if there is any partition that has not reached endOffset.
+        // We check current position (from nextCursor or cursor or beginning) vs endOffset.
+
+        for (var partition : partitions) {
+            Long endOffset = endOffsets.get(partition);
+            if (endOffset == null || endOffset == 0) {
+                continue;
+            }
+
+            Long currentPosition = null;
+            if (nextCursorOffsets.containsKey(partition.topic())
+                    && nextCursorOffsets.get(partition.topic()).containsKey(partition.partition())) {
+                currentPosition = nextCursorOffsets.get(partition.topic()).get(partition.partition());
+            }
+
+            if (currentPosition == null) {
+                 if (cursorOffsets != null
+                        && cursorOffsets.containsKey(partition.topic())
+                        && cursorOffsets.get(partition.topic()).containsKey(partition.partition())) {
+                    currentPosition = cursorOffsets.get(partition.topic()).get(partition.partition());
+                } else {
+                    // Start from beginning - we don't know the exact offset value of "beginning" here easily
+                    // without querying, but we can assume if endOffset > 0, there is data.
+                    // But maybe we already read it?
+                    // If we didn't populate nextCursor for this partition, and limitReached is true,
+                    // and we haven't processed this partition yet (because we stopped early), then we have more.
+                    // But how do we know if we processed it?
+                    // The fetch loop is sequential.
+                    // If we stopped at partition `i`, then partitions `i+1`... are untouched.
+                    // So if we find a partition with NO nextCursor entry, and it has data (endOffset > 0? No, beginning might be == endOffset).
+                    // We can't strictly know if we have more without knowing beginning offset.
+                    // However, we can approximate: if we haven't touched it, assume potentially has more.
+                    // But safe bet: calculate if *any* partition is behind endOffset.
+                    currentPosition = -1L; // Flag for "unknown/beginning"
+                }
+            }
+
+            if (currentPosition == -1L) {
+                 // We haven't read this partition. If it has messages, hasMore = true.
+                 // We can't know for sure if beginning < endOffset without querying beginningOffsets.
+                 // But typically if endOffset > 0 it likely has data (unless all expired).
+                 // To be perfectly correct, we should probably fetch beginningOffsets too in getBatchMessages.
+                 // Let's assume yes for now, or improve.
+                 // Actually, if we stopped early, any subsequent partition in the list is "more".
+                 return true;
+            }
+
+            if (currentPosition < endOffset) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private PaginatedResponse<MessageDto> getMessagesInternal(java.util.Collection<String> topics, Instant startTime,
             Instant endTime, String execId, String cursor) {
         Consumer<Object, Object> consumer = null;

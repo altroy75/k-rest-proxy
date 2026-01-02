@@ -73,4 +73,16 @@ public class RequestValidator {
                     "Execution ID can only contain alphanumeric characters, underscores, and hyphens");
         }
     }
+
+    /**
+     * Validates the list of topics.
+     */
+    public void validateTopicsListSize(java.util.List<String> topics) {
+        if (topics == null || topics.isEmpty()) {
+            throw new InvalidRequestException("Topic list cannot be null or empty");
+        }
+        if (topics.size() > 30) {
+            throw new InvalidRequestException("Cannot request more than 30 topics");
+        }
+    }
 }

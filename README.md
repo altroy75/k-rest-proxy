@@ -83,6 +83,17 @@ GET /api/v1/messages/by-execution?topics={topic1,topic2}&execId={id}
 
 Automatically finds execution time window from `execids` topic and retrieves messages.
 
+### Get Batch Messages
+
+```http
+GET /api/v1/messages/batch?topics={topic1,topic2}&cursor={cursor}
+```
+
+Retrieves paginated messages from a provided list of topics (up to 30).
+Unlike other endpoints, this does not require a time window.
+The initial request returns messages from the beginning of each topic/partition.
+Subsequent requests should provide the `cursor` from the previous response to continue fetching.
+
 ## Configuration
 
 Key configuration properties (see [application.yml](src/main/ resources/application.yml)):

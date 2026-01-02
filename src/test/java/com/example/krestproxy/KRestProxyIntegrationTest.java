@@ -329,4 +329,78 @@ public class KRestProxyIntegrationTest {
 
                 return new org.springframework.web.client.RestTemplate();
         }
+
+        @Test
+        void testGetBatchMessages() throws Exception {
+                String topic1 = "test-integration-batch-1";
+                String topic2 = "test-integration-batch-2";
+
+                // Define schemas
+                String keySchemaString = "{\"type\":\"record\",\"name\":\"Key\",\"fields\":[{\"name\":\"version\",\"type\":\"string\"},{\"name\":\"exec_id\",\"type\":\"string\"},{\"name\":\"timestamp\",\"type\":\"long\"}]}";
+                Schema keySchema = new Schema.Parser().parse(keySchemaString);
+
+                String valueSchemaString = "{\"type\":\"record\",\"name\":\"Value\",\"fields\":[{\"name\":\"data\",\"type\":\"string\"}]}";
+                Schema valueSchema = new Schema.Parser().parse(valueSchemaString);
+
+                // Produce messages
+                Map<String, Object> props = new HashMap<>();
+                props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
+                props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, KafkaAvroSerializer.class);
+                props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, KafkaAvroSerializer.class);
+                props.put("schema.registry.url",
+                                "http://" + schemaRegistry.getHost() + ":" + schemaRegistry.getMappedPort(8081));
+
+                ProducerFactory<Object, Object> producerFactory = new DefaultKafkaProducerFactory<>(props);
+                KafkaTemplate<Object, Object> template = new KafkaTemplate<>(producerFactory);
+
+                long now = System.currentTimeMillis();
+
+                // Topic 1 message
+                GenericRecord key1 = new GenericData.Record(keySchema);
+                key1.put("version", "v1");
+                key1.put("exec_id", "batch-exec-1");
+                key1.put("timestamp", now);
+                GenericRecord val1 = new GenericData.Record(valueSchema);
+                val1.put("data", "topic1-data");
+                template.send(topic1, key1, val1).get();
+
+                // Topic 2 message
+                GenericRecord key2 = new GenericData.Record(keySchema);
+                key2.put("version", "v1");
+                key2.put("exec_id", "batch-exec-2");
+                key2.put("timestamp", now);
+                GenericRecord val2 = new GenericData.Record(valueSchema);
+                val2.put("data", "topic2-data");
+                template.send(topic2, key2, val2).get();
+
+                Thread.sleep(2000);
+
+                // Call API
+                HttpHeaders headers = new HttpHeaders();
+                headers.set("X-API-KEY", "secret-api-key");
+                headers.set("Request-ID", "req-test-batch");
+                headers.set("RLT-ID", "1001");
+                HttpEntity<String> entity = new HttpEntity<>(headers);
+
+                String url = "https://localhost:" + port + "/api/v1/messages/batch" +
+                                "?topics=" + topic1 + "," + topic2;
+
+                org.springframework.web.client.RestTemplate looseRestTemplate = createInsecureRestTemplate();
+
+                ResponseEntity<PaginatedResponse<MessageDto>> response = looseRestTemplate.exchange(
+                                url,
+                                HttpMethod.GET,
+                                entity,
+                                new ParameterizedTypeReference<PaginatedResponse<MessageDto>>() {
+                                });
+
+                assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
+                List<MessageDto> messages = response.getBody().data();
+                assertThat(messages).hasSize(2);
+
+                boolean foundTopic1 = messages.stream().anyMatch(m -> m.topicName().equals(topic1));
+                boolean foundTopic2 = messages.stream().anyMatch(m -> m.topicName().equals(topic2));
+                assertThat(foundTopic1).isTrue();
+                assertThat(foundTopic2).isTrue();
+        }
 }
