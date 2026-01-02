@@ -388,6 +388,72 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
+  /messages/batch:
+    get:
+      tags:
+        - Messages
+      summary: Get paginated messages from multiple topics
+      description: |
+        Retrieves messages from a provided list of topics.
+        The pagination is implemented using a cursor mechanism.
+        The initial request returns messages from the beginning of each topic/partition.
+        Subsequent requests start from the cursor.
+      operationId: getBatchMessages
+      parameters:
+        - name: topics
+          in: query
+          required: true
+          description: List of Kafka topic names (max 30)
+          schema:
+            type: array
+            items:
+              type: string
+              pattern: '^[a-zA-Z0-9._-]+$'
+            minItems: 1
+            maxItems: 30
+          style: form
+          explode: true
+          example: ['topic-a', 'topic-b']
+        - name: cursor
+          in: query
+          required: false
+          description: Pagination cursor for fetching the next page of results
+          schema:
+            type: string
+          example: dG9waWMtYTowOjEw
+        - name: Request-ID
+          in: header
+          required: true
+          description: Unique request identifier
+          schema:
+            type: string
+          example: 'req-123456'
+        - name: RLT-ID
+          in: header
+          required: true
+          description: RLT identifier (must be an integer)
+          schema:
+            type: integer
+          example: 1001
+      responses:
+        '200':
+          description: Successful response with paginated messages
+          headers:
+            RLT-ID:
+              description: RLT identifier returned in response
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedMessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
 components:
   securitySchemes:
     ApiKeyAuth:
